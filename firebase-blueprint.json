@@ -1,0 +1,121 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "Application users (Customers, Sellers, Admins)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "mobile": { "type": "string" },
+        "role": { "type": "string", "enum": ["customer", "seller", "admin"] },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "shopName": { "type": "string" },
+        "walletBalance": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "blocked"] },
+        "upiId": { "type": "string" }
+      },
+      "required": ["uid", "name", "role"]
+    },
+    "products": {
+      "title": "Product",
+      "description": "Products listed by sellers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "image": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "expiryTime": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sellerId", "name", "price", "location"]
+    },
+    "orders": {
+      "title": "Order",
+      "description": "Customer orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerId": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "platformFee": { "type": "number" },
+        "sellerAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "out_for_delivery", "delivered", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid"] }
+      },
+      "required": ["customerId", "sellerId", "items", "totalAmount"]
+    },
+    "notifications": {
+      "title": "Notification",
+      "description": "App notifications for users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["order", "system", "payment"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "transactions": {
+      "title": "Transaction",
+      "description": "Financial transactions for users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["earning", "withdrawal", "payment", "refund", "fee", "deposit"] },
+        "status": { "type": "string", "enum": ["pending", "completed", "failed"] },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "upiId": { "type": "string" }
+      },
+      "required": ["userId", "amount", "type", "status", "description", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profiles"
+    },
+    "/products/{productId}": {
+      "schema": "products",
+      "description": "Product listings"
+    },
+    "/orders/{orderId}": {
+      "schema": "orders",
+      "description": "Order records"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "notifications",
+      "description": "User notifications"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "transactions",
+      "description": "Financial transactions"
+    }
+  }
+}
