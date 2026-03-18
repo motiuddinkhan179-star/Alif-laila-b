@@ -32,15 +32,38 @@ import {
   AlertCircle,
   CheckCircle2,
   X,
-  Bell
+  Bell,
+  LayoutDashboard,
+  BarChart3,
+  Users,
+  TrendingUp,
+  PieChart,
+  Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  Cell
+} from 'recharts';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut,
-  User as FirebaseUser
+  User as FirebaseUser,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile
 } from 'firebase/auth';
 import { 
   collection, 
@@ -135,6 +158,7 @@ interface UserProfile {
   address?: string;
   fullAddress?: string;
   upiId?: string;
+  isOnline?: boolean;
 }
 
 interface Product {
@@ -246,8 +270,8 @@ const CountdownTimer = ({ expiryTime }: { expiryTime: string }) => {
   );
 };
 
-const BottomNav = ({ activeTab, setActiveTab, role }: { activeTab: string, setActiveTab: (t: string) => void, role: Role }) => {
-  const tabs = [
+const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute }: { activeTab: string, setActiveTab: (t: string) => void, role: Role, isAdminRoute: boolean }) => {
+  let tabs = [
     { id: 'home', icon: Home, label: 'Home' },
     { id: 'categories', icon: Search, label: 'Categories' },
     { id: 'orders', icon: Package, label: 'Orders' },
@@ -256,26 +280,45 @@ const BottomNav = ({ activeTab, setActiveTab, role }: { activeTab: string, setAc
   ];
 
   if (role === 'seller') {
-    tabs[0] = { id: 'seller-dashboard', icon: Store, label: 'Dashboard' };
-    tabs[1] = { id: 'seller-products', icon: Plus, label: 'Products' };
+    tabs = [
+      { id: 'seller-dashboard', icon: Store, label: 'Dashboard' },
+      { id: 'seller-products', icon: Plus, label: 'Products' },
+      { id: 'orders', icon: Package, label: 'Orders' },
+      { id: 'wallet', icon: Wallet, label: 'Wallet' },
+      { id: 'account', icon: User, label: 'Account' },
+    ];
   }
 
-  if (role === 'admin') {
-    tabs[0] = { id: 'admin-dashboard', icon: ShieldCheck, label: 'Admin' };
+  if (isAdminRoute) {
+    tabs = [
+      { id: 'admin-dashboard', icon: LayoutDashboard, label: 'Dash' },
+      { id: 'admin-orders', icon: Package, label: 'Orders' },
+      { id: 'admin-sellers', icon: Users, label: 'Sellers' },
+      { id: 'admin-customers', icon: User, label: 'Users' },
+      { id: 'admin-analytics', icon: BarChart3, label: 'Stats' },
+    ];
   }
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex justify-around items-center py-2 pb-6 z-50">
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex justify-around items-center py-2 pb-6 z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => setActiveTab(tab.id)}
-          className={`flex flex-col items-center space-y-1 transition-colors ${
-            activeTab === tab.id ? 'text-orange-600' : 'text-gray-400'
+          className={`flex flex-col items-center space-y-1 transition-all duration-300 relative ${
+            activeTab === tab.id ? 'text-orange-600 scale-110' : 'text-gray-400 hover:text-gray-600'
           }`}
         >
-          <tab.icon size={24} />
-          <span className="text-[10px] font-medium">{tab.label}</span>
+          {activeTab === tab.id && (
+            <motion.div 
+              layoutId="activeTab"
+              className="absolute -top-2 w-1 h-1 bg-orange-600 rounded-full"
+            />
+          )}
+          <tab.icon size={22} strokeWidth={activeTab === tab.id ? 2.5 : 2} />
+          <span className={`text-[9px] font-bold uppercase tracking-tighter ${activeTab === tab.id ? 'opacity-100' : 'opacity-60'}`}>
+            {tab.label}
+          </span>
         </button>
       ))}
     </div>
@@ -311,7 +354,12 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
       let errorMessage = "Something went wrong.";
       try {
         const parsed = JSON.parse(this.state.error.message);
-        if (parsed.error) errorMessage = `Firestore Error: ${parsed.error}`;
+        if (parsed.error) {
+          errorMessage = `Firestore Error: ${parsed.error}`;
+          if (parsed.error.includes('offline')) {
+            errorMessage = "Firestore connection failed. Please ensure you have created a Firestore database in your Firebase Console and that your project ID is correct.";
+          }
+        }
       } catch (e) {
         errorMessage = this.state.error.message || errorMessage;
       }
@@ -349,6 +397,14 @@ function AlifLailaApp() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('home');
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#/admin');
+  
+  // Auth State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -410,16 +466,36 @@ function AlifLailaApp() {
         try {
           const docSnap = await getDoc(docRef);
           if (!docSnap.exists()) {
-            const newProfile: UserProfile = {
-              uid: u.uid,
-              name: u.displayName || 'User',
-              email: u.email || '',
-              role: 'customer',
-              walletBalance: 0,
-              status: 'approved'
-            };
-            await setDoc(docRef, newProfile);
-            setProfile(newProfile);
+            // Check if there's a pre-approved profile for this email
+            const q = query(collection(db, 'users'), where('email', '==', u.email?.toLowerCase()));
+            const querySnap = await getDocs(q);
+            
+            let initialProfile: UserProfile;
+
+            if (!querySnap.empty) {
+              // Claim the pre-approved profile
+              const preProfile = querySnap.docs[0].data() as UserProfile;
+              initialProfile = {
+                ...preProfile,
+                uid: u.uid // Update to actual Auth UID
+              };
+              // Delete the temporary pre-approved doc
+              await deleteDoc(doc(db, 'users', querySnap.docs[0].id));
+            } else {
+              // Create new default profile
+              initialProfile = {
+                uid: u.uid,
+                name: u.displayName || u.email?.split('@')[0] || 'User',
+                email: u.email || '',
+                mobile: u.phoneNumber || '',
+                role: (u.email === 'khanmohammadahmad597@gmail.com') ? 'admin' : 'customer',
+                walletBalance: 0,
+                status: 'approved'
+              };
+            }
+            
+            await setDoc(docRef, initialProfile);
+            setProfile(initialProfile);
           }
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, `users/${u.uid}`);
@@ -498,7 +574,7 @@ function AlifLailaApp() {
 
     // Fetch Sellers (for everyone to check delivery radius)
     const qSellers = profile.role === 'admin'
-      ? query(collection(db, 'users'), where('status', 'in', ['pending', 'approved', 'blocked']))
+      ? query(collection(db, 'users'))
       : query(collection(db, 'users'), where('role', '==', 'seller'), where('status', '==', 'approved'));
     
     const unsubSellers = onSnapshot(qSellers, (snapshot) => {
@@ -581,6 +657,125 @@ function AlifLailaApp() {
   };
 
   // --- Actions ---
+  const [adminOrderTab, setAdminOrderTab] = useState<'new' | 'preparing' | 'delivery' | 'delivered'>('new');
+  const [sellerSearch, setSellerSearch] = useState('');
+
+  const [showAddSellerModal, setShowAddSellerModal] = useState(false);
+  const [newSellerData, setNewSellerData] = useState({
+    name: '',
+    email: '',
+    mobile: '',
+    shopName: '',
+    shopAddress: '',
+    shopCategory: CATEGORIES[0],
+    aadhaarNumber: '',
+    panNumber: '',
+    licenseNumber: '',
+    deliveryRadius: 10,
+    deliveryFee: 40
+  });
+
+  const handleEmailPasswordAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsAuthLoading(true);
+
+    try {
+      const trimmedEmail = email.trim();
+      if (isSignUp) {
+        const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+        if (displayName) {
+          await updateProfile(userCredential.user, { displayName });
+        }
+      } else {
+        await signInWithEmailAndPassword(auth, trimmedEmail, password);
+      }
+    } catch (error: any) {
+      console.error("Auth error:", error);
+      let message = "Authentication failed. Please try again.";
+      
+      if (error.code === 'auth/email-already-in-use') {
+        message = "This email is already registered. Try logging in or use a different email.";
+      } else if (error.code === 'auth/invalid-email') {
+        message = "Please enter a valid email address.";
+      } else if (error.code === 'auth/weak-password') {
+        message = "Password should be at least 6 characters.";
+      } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        message = "Invalid email or password. If you previously used Google to sign in, please use the Google button below.";
+      } else if (error.message) {
+        message = error.message;
+      }
+      
+      setAuthError(message);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const toggleOnline = async () => {
+    if (!profile) return;
+    const newStatus = !profile.isOnline;
+    try {
+      await updateDoc(doc(db, 'users', profile.uid), { isOnline: newStatus });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${profile.uid}`);
+    }
+  };
+
+  const addSellerInstantly = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSellerData.email || !newSellerData.name || !newSellerData.shopName) {
+      alert('Please fill required fields');
+      return;
+    }
+
+    try {
+      // Create a unique ID for the pre-approved seller
+      const tempUid = `pre_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      const sellerProfile: UserProfile = {
+        uid: tempUid,
+        name: newSellerData.name,
+        email: newSellerData.email.toLowerCase(),
+        role: 'seller',
+        status: 'approved',
+        mobile: newSellerData.mobile,
+        shopName: newSellerData.shopName,
+        shopAddress: newSellerData.shopAddress,
+        shopCategory: newSellerData.shopCategory,
+        aadhaarNumber: newSellerData.aadhaarNumber,
+        panNumber: newSellerData.panNumber,
+        licenseNumber: newSellerData.licenseNumber,
+        deliveryRadius: newSellerData.deliveryRadius,
+        deliveryFee: newSellerData.deliveryFee,
+        walletBalance: 0,
+        applicationDate: new Date().toISOString()
+      };
+
+      await setDoc(doc(db, 'users', tempUid), sellerProfile);
+      
+      setShowAddSellerModal(false);
+      setNewSellerData({
+        name: '',
+        email: '',
+        mobile: '',
+        shopName: '',
+        shopAddress: '',
+        shopCategory: CATEGORIES[0],
+        aadhaarNumber: '',
+        panNumber: '',
+        licenseNumber: '',
+        deliveryRadius: 10,
+        deliveryFee: 40
+      });
+      
+      alert('Seller added successfully! They can now log in with this email.');
+    } catch (error) {
+      console.error('Error adding seller:', error);
+      alert('Failed to add seller');
+    }
+  };
+
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
@@ -974,7 +1169,7 @@ function AlifLailaApp() {
     }
   };
 
-  const updateProfile = async (data: Partial<UserProfile>) => {
+  const handleUpdateProfileDoc = async (data: Partial<UserProfile>) => {
     if (!profile) return;
     try {
       await updateDoc(doc(db, 'users', profile.uid), data);
@@ -1202,20 +1397,109 @@ function AlifLailaApp() {
     }
 
     return (
-      <div className="h-screen flex flex-col items-center justify-center p-6 bg-white">
-        <div className="w-24 h-24 bg-orange-600 rounded-3xl flex items-center justify-center mb-8 shadow-xl shadow-orange-200">
-          <ShoppingBag size={48} className="text-white" />
+      <div className="h-screen flex flex-col items-center justify-center p-6 bg-white overflow-y-auto">
+        <div className="w-20 h-20 bg-orange-600 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-orange-200 shrink-0">
+          <ShoppingBag size={40} className="text-white" />
         </div>
-        <h1 className="text-4xl font-bold text-gray-900 mb-2">Alif Laila</h1>
-        <p className="text-gray-500 text-center mb-12">Your local marketplace for everything nearby.</p>
         
-        <button 
-          onClick={handleLogin}
-          className="w-full bg-orange-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg shadow-orange-200 flex items-center justify-center space-x-3 active:scale-95 transition-transform"
-        >
-          <span>Get Started</span>
-          <ArrowRight size={20} />
-        </button>
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-black text-gray-900 mb-2">Alif Laila</h1>
+          <p className="text-gray-500 text-sm">Your local marketplace for everything nearby.</p>
+        </div>
+
+        <div className="w-full max-w-sm space-y-6">
+          <form onSubmit={handleEmailPasswordAuth} className="space-y-4">
+            {isSignUp && (
+              <div>
+                <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Full Name</label>
+                <input 
+                  type="text" 
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Enter your name"
+                  className="w-full bg-gray-50 border-none rounded-2xl py-4 px-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                  required={isSignUp}
+                />
+              </div>
+            )}
+            
+            <div>
+              <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Email Address</label>
+              <input 
+                type="email" 
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Enter your email"
+                className="w-full bg-gray-50 border-none rounded-2xl py-4 px-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Password</label>
+              <input 
+                type="password" 
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                className="w-full bg-gray-50 border-none rounded-2xl py-4 px-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                required
+              />
+            </div>
+            
+            {authError && (
+              <div className="flex items-center space-x-2 text-red-500 bg-red-50 p-3 rounded-xl text-xs font-bold">
+                <AlertCircle size={14} />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <button 
+              type="submit"
+              disabled={isAuthLoading || !email || !password}
+              className="w-full bg-orange-600 text-white py-4 rounded-2xl font-bold text-sm shadow-lg shadow-orange-200 flex items-center justify-center space-x-3 active:scale-95 transition-transform disabled:opacity-50 disabled:active:scale-100"
+            >
+              {isAuthLoading ? (
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+                  className="w-5 h-5 border-2 border-white border-t-transparent rounded-full"
+                />
+              ) : (
+                <>
+                  <span>{isSignUp ? 'Create Account' : 'Sign In'}</span>
+                  <ArrowRight size={18} />
+                </>
+              )}
+            </button>
+          </form>
+
+          <div className="text-center">
+            <button 
+              onClick={() => { setIsSignUp(!isSignUp); setAuthError(''); }}
+              className="text-gray-500 text-xs font-bold hover:text-orange-600 transition-colors"
+            >
+              {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Create one"}
+            </button>
+          </div>
+
+          <div className="relative py-2">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-100"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-4 text-gray-400 font-bold">Or continue with</span>
+            </div>
+          </div>
+
+          <button 
+            onClick={handleLogin}
+            className="w-full bg-white border-2 border-gray-100 text-gray-700 py-4 rounded-2xl font-bold text-sm flex items-center justify-center space-x-3 active:scale-95 transition-transform"
+          >
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+            <span>Google Account</span>
+          </button>
+        </div>
       </div>
     );
   }
@@ -1662,6 +1946,22 @@ function AlifLailaApp() {
                 </div>
                 <ChevronRight size={16} className="text-gray-400" />
               </button>
+              {profile?.role === 'admin' && (
+                <button 
+                  onClick={() => {
+                    window.location.hash = '#/admin';
+                    setIsAdminRoute(true);
+                    setActiveTab('admin-dashboard');
+                  }}
+                  className="w-full flex items-center justify-between p-4 bg-gray-900 text-white rounded-2xl border border-gray-800 shadow-lg shadow-gray-200"
+                >
+                  <div className="flex items-center space-x-3">
+                    <ShieldCheck size={20} className="text-orange-500" />
+                    <span className="font-bold text-sm uppercase tracking-widest">Admin Control Panel</span>
+                  </div>
+                  <ChevronRight size={16} className="text-gray-400" />
+                </button>
+              )}
               {profile?.role === 'customer' && profile?.status === 'approved' && (
                 <button 
                   onClick={() => setShowSellerForm(true)}
@@ -1717,7 +2017,7 @@ function AlifLailaApp() {
                     <input 
                       type="text" 
                       defaultValue={profile?.name}
-                      onBlur={(e) => updateProfile({ name: e.target.value })}
+                      onBlur={(e) => handleUpdateProfileDoc({ name: e.target.value })}
                       className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500"
                     />
                   </div>
@@ -1726,7 +2026,7 @@ function AlifLailaApp() {
                     <input 
                       type="tel" 
                       defaultValue={profile?.mobile}
-                      onBlur={(e) => updateProfile({ mobile: e.target.value })}
+                      onBlur={(e) => handleUpdateProfileDoc({ mobile: e.target.value })}
                       placeholder="Enter mobile number"
                       className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500"
                     />
@@ -1735,7 +2035,7 @@ function AlifLailaApp() {
                     <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Delivery Address</label>
                     <textarea 
                       defaultValue={profile?.address}
-                      onBlur={(e) => updateProfile({ address: e.target.value })}
+                      onBlur={(e) => handleUpdateProfileDoc({ address: e.target.value })}
                       placeholder="Enter your full delivery address"
                       className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500 min-h-[80px]"
                     />
@@ -1747,7 +2047,7 @@ function AlifLailaApp() {
                         <input 
                           type="text" 
                           defaultValue={profile?.shopName}
-                          onBlur={(e) => updateProfile({ shopName: e.target.value })}
+                          onBlur={(e) => handleUpdateProfileDoc({ shopName: e.target.value })}
                           className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500"
                         />
                       </div>
@@ -1756,7 +2056,7 @@ function AlifLailaApp() {
                         <input 
                           type="number" 
                           defaultValue={profile?.deliveryRadius || 5}
-                          onBlur={(e) => updateProfile({ deliveryRadius: Number(e.target.value) })}
+                          onBlur={(e) => handleUpdateProfileDoc({ deliveryRadius: Number(e.target.value) })}
                           className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500"
                           placeholder="e.g. 5"
                         />
@@ -1767,7 +2067,7 @@ function AlifLailaApp() {
                         <input 
                           type="number" 
                           defaultValue={profile?.deliveryFee || 0}
-                          onBlur={(e) => updateProfile({ deliveryFee: Number(e.target.value) })}
+                          onBlur={(e) => handleUpdateProfileDoc({ deliveryFee: Number(e.target.value) })}
                           className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500"
                           placeholder="e.g. 20"
                         />
@@ -1993,7 +2293,20 @@ function AlifLailaApp() {
       case 'seller-dashboard':
         return (
           <div className="p-4 pb-24 space-y-6">
-            <h2 className="text-2xl font-bold text-gray-900">Seller Dashboard</h2>
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-bold text-gray-900 tracking-tighter uppercase">Seller Dashboard</h2>
+              <button 
+                onClick={toggleOnline}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${
+                  profile?.isOnline 
+                  ? 'bg-green-100 text-green-600 shadow-sm shadow-green-100' 
+                  : 'bg-gray-100 text-gray-400'
+                }`}
+              >
+                <div className={`w-2 h-2 rounded-full ${profile?.isOnline ? 'bg-green-600 animate-pulse' : 'bg-gray-400'}`} />
+                <span>{profile?.isOnline ? 'Online' : 'Offline'}</span>
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-orange-600 rounded-3xl p-4 text-white shadow-lg shadow-orange-100">
                 <p className="text-orange-100 text-[10px] uppercase font-bold tracking-wider mb-1">Total Earnings</p>
@@ -2228,106 +2541,702 @@ function AlifLailaApp() {
       case 'admin-dashboard':
         return (
           <div className="p-4 pb-24 space-y-6">
-            <h2 className="text-2xl font-bold text-gray-900">Admin Panel</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-gray-900 rounded-3xl p-4 text-white">
-                <p className="text-gray-400 text-[10px] uppercase font-bold tracking-wider mb-1">Total Sellers</p>
-                <h3 className="text-2xl font-bold">{sellers.length}</h3>
-              </div>
-              <div className="bg-orange-600 rounded-3xl p-4 text-white">
-                <p className="text-orange-100 text-[10px] uppercase font-bold tracking-wider mb-1">Platform Earnings</p>
-                <h3 className="text-2xl font-bold">₹{orders.filter(o => o.status === 'delivered').length * PLATFORM_FEE}</h3>
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-black text-gray-900 tracking-tighter">DASHBOARD</h2>
+              <div className="flex items-center space-x-2 bg-red-50 text-red-600 px-3 py-1 rounded-full animate-pulse">
+                <Activity size={14} />
+                <span className="text-[10px] font-black uppercase">Live</span>
               </div>
             </div>
 
+            {/* Stats Grid */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
+                <div className="w-10 h-10 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-600 mb-3">
+                  <ShoppingBag size={20} />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Today's Orders</p>
+                <h3 className="text-2xl font-black text-gray-900">{orders.filter(o => {
+                  const today = new Date().toDateString();
+                  return new Date(o.createdAt).toDateString() === today;
+                }).length}</h3>
+              </div>
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
+                <div className="w-10 h-10 bg-green-50 rounded-2xl flex items-center justify-center text-green-600 mb-3">
+                  <TrendingUp size={20} />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Revenue</p>
+                <h3 className="text-2xl font-black text-gray-900">₹{orders.filter(o => o.status === 'delivered').reduce((s, o) => s + o.totalAmount, 0)}</h3>
+              </div>
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
+                <div className="w-10 h-10 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 mb-3">
+                  <Users size={20} />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Users</p>
+                <h3 className="text-2xl font-black text-gray-900">{sellers.length + 12}</h3>
+              </div>
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm">
+                <div className="w-10 h-10 bg-red-50 rounded-2xl flex items-center justify-center text-red-600 mb-3">
+                  <Bell size={20} />
+                </div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Pending Apps</p>
+                <h3 className="text-2xl font-black text-gray-900">{sellers.filter(s => s.status === 'pending').length}</h3>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
             <div className="space-y-4">
-              <h3 className="font-bold text-gray-900">Pending Seller Applications</h3>
+              <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest ml-1">Quick Actions</h3>
+              <div className="grid grid-cols-3 gap-3">
+                <button 
+                  onClick={() => setActiveTab('admin-sellers')}
+                  className="bg-orange-600 text-white p-4 rounded-3xl flex flex-col items-center space-y-2 shadow-lg shadow-orange-100 active:scale-95 transition-transform"
+                >
+                  <Plus size={20} />
+                  <span className="text-[9px] font-bold uppercase">Add Seller</span>
+                </button>
+                <button 
+                  onClick={() => setActiveTab('admin-orders')}
+                  className="bg-gray-900 text-white p-4 rounded-3xl flex flex-col items-center space-y-2 shadow-lg shadow-gray-200 active:scale-95 transition-transform"
+                >
+                  <Package size={20} />
+                  <span className="text-[9px] font-bold uppercase">Orders</span>
+                </button>
+                <button 
+                  onClick={() => setActiveTab('admin-analytics')}
+                  className="bg-white border border-gray-100 p-4 rounded-3xl flex flex-col items-center space-y-2 shadow-sm active:scale-95 transition-transform"
+                >
+                  <BarChart3 size={20} className="text-orange-600" />
+                  <span className="text-[9px] font-bold uppercase text-gray-600">Reports</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Recent Orders Preview */}
+            <div className="space-y-4">
+              <div className="flex justify-between items-center px-1">
+                <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">Recent Orders</h3>
+                <button onClick={() => setActiveTab('admin-orders')} className="text-orange-600 text-[10px] font-black uppercase">View All</button>
+              </div>
               <div className="space-y-3">
-                {sellers.filter(s => s.status === 'pending').length === 0 ? (
-                  <p className="text-gray-400 text-sm italic">No pending applications.</p>
-                ) : (
-                  sellers.filter(s => s.status === 'pending').map(s => (
-                    <div key={s.uid} className="p-4 bg-white rounded-2xl border border-gray-100 space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-bold text-sm">{s.name}</p>
-                          <p className="text-[10px] text-gray-400">{s.email}</p>
-                          <div className="mt-2 p-2 bg-orange-50 rounded-lg space-y-1">
-                            <p className="text-xs font-bold text-orange-600">Shop: {s.shopName}</p>
-                            <p className="text-[10px] text-gray-500">Address: {s.shopAddress}</p>
-                            <p className="text-[10px] text-gray-500">Category: {s.shopCategory}</p>
-                            <p className="text-[10px] text-gray-500">Contact: {s.mobile}</p>
-                            <div className="pt-1 mt-1 border-t border-orange-100 grid grid-cols-2 gap-2">
-                              <div>
-                                <p className="text-[8px] uppercase text-gray-400">Aadhaar</p>
-                                <p className="text-[10px] font-bold">{s.aadhaarNumber}</p>
-                              </div>
-                              <div>
-                                <p className="text-[8px] uppercase text-gray-400">PAN</p>
-                                <p className="text-[10px] font-bold">{s.panNumber}</p>
-                              </div>
-                              <div className="col-span-2">
-                                <p className="text-[8px] uppercase text-gray-400">License</p>
-                                <p className="text-[10px] font-bold">{s.licenseNumber || 'N/A'}</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex space-x-2">
-                          <button 
-                            onClick={async () => {
-                              await updateDoc(doc(db, 'users', s.uid), { status: 'approved', role: 'seller' });
-                              await sendNotification(
-                                s.uid,
-                                'Seller Account Approved!',
-                                'Congratulations! Your seller application has been approved. You can now start selling.',
-                                'system'
-                              );
-                            }}
-                            className="bg-green-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold"
-                          >
-                            Approve
-                          </button>
-                          <button 
-                            onClick={async () => {
-                              await updateDoc(doc(db, 'users', s.uid), { status: 'approved' }); // Just clear pending
-                              await sendNotification(
-                                s.uid,
-                                'Application Rejected',
-                                'Sorry, your seller application was not approved at this time.',
-                                'system'
-                              );
-                            }}
-                            className="bg-red-600 text-white px-3 py-1 rounded-lg text-[10px] font-bold"
-                          >
-                            Reject
-                          </button>
-                        </div>
+                {orders.slice(0, 3).map(order => (
+                  <div key={order.id} className="bg-white p-4 rounded-3xl border border-gray-100 flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400">
+                        <Package size={18} />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-gray-900 uppercase tracking-tighter">#{order.id.slice(-6).toUpperCase()}</p>
+                        <p className="text-[10px] text-gray-400 font-bold">₹{order.totalAmount} • {order.status}</p>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <h3 className="font-bold text-gray-900">Active Sellers</h3>
-              <div className="space-y-3">
-                {sellers.filter(s => s.status === 'approved' && s.role === 'seller').map(s => (
-                  <div key={s.uid} className="flex items-center justify-between p-4 bg-white rounded-2xl border border-gray-100">
-                    <div>
-                      <p className="font-bold text-sm">{s.name}</p>
-                      <p className="text-[10px] text-gray-400">{s.shopName}</p>
-                    </div>
-                    <button 
-                      onClick={() => blockUser(s.uid, s.status)}
-                      className={`${s.status === 'blocked' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'} px-3 py-1 rounded-lg text-[10px] font-bold`}
-                    >
-                      {s.status === 'blocked' ? 'Unblock' : 'Block'}
-                    </button>
+                    <ChevronRight size={16} className="text-gray-300" />
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        );
+
+      case 'admin-orders':
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Order Management</h2>
+            
+            {/* Order Tabs */}
+            <div className="flex bg-gray-100 p-1 rounded-2xl">
+              {(['new', 'preparing', 'delivery', 'delivered'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setAdminOrderTab(tab)}
+                  className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
+                    adminOrderTab === tab ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-400'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-4">
+              {orders.filter(o => {
+                if (adminOrderTab === 'new') return o.status === 'pending';
+                if (adminOrderTab === 'preparing') return o.status === 'accepted';
+                if (adminOrderTab === 'delivery') return o.status === 'out_for_delivery';
+                return o.status === 'delivered';
+              }).length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-gray-400 opacity-40">
+                  <Package size={48} className="mb-2" />
+                  <p className="text-sm font-bold uppercase tracking-widest">No {adminOrderTab} orders</p>
+                </div>
+              ) : (
+                orders.filter(o => {
+                  if (adminOrderTab === 'new') return o.status === 'pending';
+                  if (adminOrderTab === 'preparing') return o.status === 'accepted';
+                  if (adminOrderTab === 'delivery') return o.status === 'out_for_delivery';
+                  return o.status === 'delivered';
+                }).map(order => (
+                  <div key={order.id} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">#{order.id.toUpperCase()}</p>
+                        <h4 className="font-black text-gray-900 mt-1">₹{order.totalAmount}</h4>
+                        <p className="text-[8px] font-black text-orange-600 uppercase mt-1">
+                          Seller: {sellers.find(s => s.uid === order.sellerId)?.name || 'Unknown Seller'}
+                        </p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${
+                        order.status === 'delivered' ? 'bg-green-100 text-green-600' : 'bg-orange-100 text-orange-600'
+                      }`}>
+                        {order.status.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-3 py-3 border-y border-gray-50">
+                      <div className="w-8 h-8 bg-gray-50 rounded-xl flex items-center justify-center text-gray-400">
+                        <User size={14} />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-900">{order.customerMobile}</p>
+                        <p className="text-[8px] text-gray-400 truncate max-w-[200px]">{order.deliveryAddress}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex space-x-2">
+                      {order.status === 'pending' && (
+                        <button 
+                          onClick={() => updateOrderStatus(order.id, 'accepted')}
+                          className="flex-1 bg-orange-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
+                        >
+                          Accept Order
+                        </button>
+                      )}
+                      {order.status === 'accepted' && (
+                        <button 
+                          onClick={() => updateOrderStatus(order.id, 'out_for_delivery')}
+                          className="flex-1 bg-blue-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
+                        >
+                          Ship Order
+                        </button>
+                      )}
+                      {order.status === 'out_for_delivery' && (
+                        <button 
+                          onClick={() => updateOrderStatus(order.id, 'delivered')}
+                          className="flex-1 bg-green-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
+                        >
+                          Mark Delivered
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => setSelectedOrder(order)}
+                        className="p-3 bg-gray-100 text-gray-600 rounded-2xl active:scale-95 transition-transform"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        );
+
+      case 'admin-sellers':
+        const filteredSellers = sellers.filter(s => 
+          s.name.toLowerCase().includes(sellerSearch.toLowerCase()) || 
+          s.shopName?.toLowerCase().includes(sellerSearch.toLowerCase())
+        );
+
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Seller Management</h2>
+              <button 
+                onClick={() => setShowAddSellerModal(true)}
+                className="bg-orange-600 text-white p-3 rounded-2xl shadow-lg shadow-orange-100 active:scale-95 transition-transform"
+              >
+                <Plus size={20} />
+              </button>
+            </div>
+
+            {/* Search Bar */}
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input 
+                type="text"
+                placeholder="Search sellers or shops..."
+                value={sellerSearch}
+                onChange={(e) => setSellerSearch(e.target.value)}
+                className="w-full bg-white border border-gray-100 rounded-[24px] py-4 pl-12 pr-4 text-sm font-bold shadow-sm focus:ring-2 focus:ring-orange-500 outline-none"
+              />
+            </div>
+
+            <AnimatePresence>
+              {showAddSellerModal && (
+                <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                    animate={{ scale: 1, opacity: 1, y: 0 }}
+                    exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                    className="bg-white w-full max-w-md rounded-[40px] p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+                  >
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-black text-gray-900 tracking-tighter uppercase">Quick Add Seller</h3>
+                      <button onClick={() => setShowAddSellerModal(false)} className="p-2 bg-gray-50 rounded-xl text-gray-400">
+                        <X size={20} />
+                      </button>
+                    </div>
+
+                    <form onSubmit={addSellerInstantly} className="space-y-4">
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Full Name *</label>
+                          <input 
+                            required
+                            type="text" 
+                            value={newSellerData.name}
+                            onChange={(e) => setNewSellerData({...newSellerData, name: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                            placeholder="Seller's Name"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Email Address *</label>
+                          <input 
+                            required
+                            type="email" 
+                            value={newSellerData.email}
+                            onChange={(e) => setNewSellerData({...newSellerData, email: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                            placeholder="seller@example.com"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Mobile *</label>
+                            <input 
+                              required
+                              type="tel" 
+                              value={newSellerData.mobile}
+                              onChange={(e) => setNewSellerData({...newSellerData, mobile: e.target.value})}
+                              className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                              placeholder="10-digit mobile"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Category</label>
+                            <select 
+                              value={newSellerData.shopCategory}
+                              onChange={(e) => setNewSellerData({...newSellerData, shopCategory: e.target.value})}
+                              className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                            >
+                              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shop Name *</label>
+                          <input 
+                            required
+                            type="text" 
+                            value={newSellerData.shopName}
+                            onChange={(e) => setNewSellerData({...newSellerData, shopName: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                            placeholder="Business Name"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Shop Address</label>
+                          <textarea 
+                            value={newSellerData.shopAddress}
+                            onChange={(e) => setNewSellerData({...newSellerData, shopAddress: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500 h-20 resize-none"
+                            placeholder="Full location details"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Aadhaar</label>
+                            <input 
+                              type="text" 
+                              value={newSellerData.aadhaarNumber}
+                              onChange={(e) => setNewSellerData({...newSellerData, aadhaarNumber: e.target.value})}
+                              className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                              placeholder="12-digit"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">PAN</label>
+                            <input 
+                              type="text" 
+                              value={newSellerData.panNumber}
+                              onChange={(e) => setNewSellerData({...newSellerData, panNumber: e.target.value})}
+                              className="w-full bg-gray-50 border-none rounded-2xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500"
+                              placeholder="10-digit"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <button 
+                        type="submit"
+                        className="w-full bg-orange-600 text-white py-4 rounded-3xl font-black text-sm uppercase tracking-widest shadow-lg shadow-orange-100 active:scale-95 transition-transform mt-4"
+                      >
+                        Create Seller Account
+                      </button>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+            
+            <div className="space-y-6">
+              {/* Pending Applications */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Pending Applications ({filteredSellers.filter(s => s.status === 'pending').length})</h3>
+                <div className="space-y-3">
+                  {filteredSellers.filter(s => s.status === 'pending').map(s => (
+                    <div key={s.uid} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4">
+                      <div className="flex justify-between items-start">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-12 h-12 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-600 font-black text-xl">
+                            {s.name[0]}
+                          </div>
+                          <div>
+                            <h4 className="font-black text-gray-900">{s.name}</h4>
+                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">{s.shopName}</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 p-3 bg-gray-50 rounded-2xl">
+                        <div>
+                          <label className="text-[8px] font-bold text-gray-400 uppercase">Category</label>
+                          <p className="text-[10px] font-black">{s.shopCategory}</p>
+                        </div>
+                        <div>
+                          <label className="text-[8px] font-bold text-gray-400 uppercase">Contact</label>
+                          <p className="text-[10px] font-black">{s.mobile}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex space-x-2">
+                        <button 
+                          onClick={async () => {
+                            await updateDoc(doc(db, 'users', s.uid), { status: 'approved', role: 'seller' });
+                            await sendNotification(s.uid, 'Approved!', 'Your seller account is ready.', 'system');
+                          }}
+                          className="flex-1 bg-green-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
+                        >
+                          Approve
+                        </button>
+                        <button 
+                          onClick={async () => {
+                            await updateDoc(doc(db, 'users', s.uid), { status: 'approved' });
+                            await sendNotification(s.uid, 'Rejected', 'Your application was rejected.', 'system');
+                          }}
+                          className="flex-1 bg-red-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active Sellers */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Active Sellers</h3>
+                <div className="space-y-3">
+                  {filteredSellers.filter(s => s.status === 'approved' && s.role === 'seller').map(s => (
+                    <div key={s.uid} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4">
+                      <div className="flex justify-between items-start">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-12 h-12 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 font-black text-xl">
+                            {s.name[0]}
+                          </div>
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <h4 className="font-black text-gray-900">{s.name}</h4>
+                              <div className={`w-2 h-2 rounded-full ${s.isOnline ? 'bg-green-600 animate-pulse' : 'bg-gray-300'}`} />
+                            </div>
+                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">{s.shopName}</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => blockUser(s.uid, s.status)}
+                          className={`${s.status === 'blocked' ? 'bg-green-100 text-green-600' : 'bg-red-50 text-red-600'} px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-colors`}
+                        >
+                          {s.status === 'blocked' ? 'Unblock' : 'Block'}
+                        </button>
+                      </div>
+
+                      <div className="p-4 bg-orange-50 rounded-2xl space-y-3">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">Category</p>
+                            <p className="text-[10px] font-black text-orange-600">{s.shopCategory}</p>
+                          </div>
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">Mobile</p>
+                            <p className="text-[10px] font-black">{s.mobile}</p>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Address</p>
+                          <p className="text-[10px] font-bold leading-tight">{s.shopAddress}</p>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-orange-100">
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">Aadhaar</p>
+                            <p className="text-[9px] font-black">{s.aadhaarNumber}</p>
+                          </div>
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">PAN</p>
+                            <p className="text-[9px] font-black">{s.panNumber}</p>
+                          </div>
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">License</p>
+                            <p className="text-[9px] font-black truncate">{s.licenseNumber || 'N/A'}</p>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center pt-2 border-t border-orange-100">
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">Wallet Balance</p>
+                            <p className="text-xs font-black text-green-600">₹{s.walletBalance}</p>
+                          </div>
+                          <div>
+                            <p className="text-[8px] font-bold text-gray-400 uppercase">Email</p>
+                            <p className="text-[9px] font-black">{s.email}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'admin-customers':
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Customer Management</h2>
+            
+            <div className="space-y-4">
+              <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Registered Customers ({sellers.filter(s => s.role === 'customer').length})</h3>
+              <div className="space-y-3">
+                {sellers.filter(s => s.role === 'customer').map(c => (
+                  <div key={c.uid} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 font-black text-xl">
+                          {c.name[0]}
+                        </div>
+                        <div>
+                          <h4 className="font-black text-gray-900">{c.name}</h4>
+                          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">{c.email}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => blockUser(c.uid, c.status)}
+                        className={`${c.status === 'blocked' ? 'bg-green-100 text-green-600' : 'bg-red-50 text-red-600'} px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-colors`}
+                      >
+                        {c.status === 'blocked' ? 'Unblock' : 'Block'}
+                      </button>
+                    </div>
+
+                    <div className="p-4 bg-blue-50 rounded-2xl space-y-3">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Mobile</p>
+                          <p className="text-[10px] font-black">{c.mobile || 'N/A'}</p>
+                        </div>
+                        <div>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Wallet</p>
+                          <p className="text-[10px] font-black text-green-600">₹{c.walletBalance}</p>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[8px] font-bold text-gray-400 uppercase">Delivery Address</p>
+                        <p className="text-[10px] font-bold leading-tight">{c.address || 'No address added'}</p>
+                      </div>
+                      <div className="flex justify-between items-center pt-2 border-t border-blue-100">
+                        <div>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Orders Placed</p>
+                          <p className="text-xs font-black text-gray-900">{orders.filter(o => o.customerId === c.uid).length}</p>
+                        </div>
+                        <div>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Status</p>
+                          <p className={`text-[9px] font-black uppercase ${c.status === 'approved' ? 'text-green-600' : 'text-red-600'}`}>{c.status}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'admin-analytics':
+        const revenueData = [
+          { name: 'Mon', revenue: 4000 },
+          { name: 'Tue', revenue: 3000 },
+          { name: 'Wed', revenue: 2000 },
+          { name: 'Thu', revenue: 2780 },
+          { name: 'Fri', revenue: 1890 },
+          { name: 'Sat', revenue: 2390 },
+          { name: 'Sun', revenue: 3490 },
+        ];
+
+        const categoryData = [
+          { name: 'Grocery', value: 400 },
+          { name: 'Fruits', value: 300 },
+          { name: 'Dairy', value: 300 },
+          { name: 'Bakery', value: 200 },
+        ];
+
+        const COLORS = ['#E23744', '#FC8019', '#000000', '#666666'];
+
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Business Insights</h2>
+
+            {/* Revenue Chart */}
+            <div className="bg-white p-6 rounded-[32px] border border-gray-100 shadow-sm space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest">Weekly Revenue</h3>
+                <span className="text-green-600 text-[10px] font-black uppercase">+12.5%</span>
+              </div>
+              <div className="h-48 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={revenueData}>
+                    <defs>
+                      <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#FC8019" stopOpacity={0.3}/>
+                        <stop offset="95%" stopColor="#FC8019" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold', fill: '#9ca3af'}} />
+                    <YAxis hide />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', fontWeight: 'bold' }}
+                    />
+                    <Area type="monotone" dataKey="revenue" stroke="#FC8019" strokeWidth={3} fillOpacity={1} fill="url(#colorRev)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Top Categories */}
+            <div className="bg-white p-6 rounded-[32px] border border-gray-100 shadow-sm space-y-6">
+              <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest">Top Categories</h3>
+              <div className="space-y-4">
+                {categoryData.map((cat, idx) => (
+                  <div key={cat.name} className="space-y-2">
+                    <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
+                      <span>{cat.name}</span>
+                      <span>{Math.round((cat.value / 1200) * 100)}%</span>
+                    </div>
+                    <div className="w-full h-2 bg-gray-50 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(cat.value / 1200) * 100}%` }}
+                        transition={{ duration: 1, delay: idx * 0.1 }}
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: COLORS[idx % COLORS.length] }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Performance Stats */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-900 p-5 rounded-[32px] text-white">
+                <PieChart size={20} className="text-orange-500 mb-2" />
+                <p className="text-[8px] font-bold text-gray-400 uppercase tracking-widest">Avg Order Value</p>
+                <h4 className="text-xl font-black">₹452</h4>
+              </div>
+              <div className="bg-orange-600 p-5 rounded-[32px] text-white">
+                <Activity size={20} className="text-white mb-2" />
+                <p className="text-[8px] font-bold text-orange-100 uppercase tracking-widest">Conversion Rate</p>
+                <h4 className="text-xl font-black">3.2%</h4>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'admin-profile':
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Admin Settings</h2>
+            
+            <div className="bg-white p-6 rounded-[40px] border border-gray-100 shadow-sm flex flex-col items-center text-center space-y-4">
+              <div className="w-24 h-24 bg-orange-600 rounded-[32px] flex items-center justify-center text-white shadow-xl shadow-orange-100 relative">
+                <ShieldCheck size={48} />
+                <div className="absolute -bottom-2 -right-2 w-8 h-8 bg-green-500 border-4 border-white rounded-full flex items-center justify-center text-white">
+                  <CheckCircle2 size={14} />
+                </div>
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-gray-900 uppercase tracking-tighter">{profile?.name}</h3>
+                <p className="text-xs text-gray-400 font-bold">{profile?.email}</p>
+                <span className="inline-block mt-2 bg-gray-900 text-white px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest">
+                  Super Admin
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <button className="w-full bg-white p-5 rounded-3xl border border-gray-100 flex items-center justify-between active:scale-95 transition-transform group">
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                    <Bell size={20} />
+                  </div>
+                  <span className="text-sm font-black text-gray-700 uppercase tracking-widest">Notifications</span>
+                </div>
+                <ChevronRight size={18} className="text-gray-300" />
+              </button>
+              <button className="w-full bg-white p-5 rounded-3xl border border-gray-100 flex items-center justify-between active:scale-95 transition-transform group">
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 bg-purple-50 rounded-2xl flex items-center justify-center text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                    <Wallet size={20} />
+                  </div>
+                  <span className="text-sm font-black text-gray-700 uppercase tracking-widest">Payout Settings</span>
+                </div>
+                <ChevronRight size={18} className="text-gray-300" />
+              </button>
+              <button className="w-full bg-white p-5 rounded-3xl border border-gray-100 flex items-center justify-between active:scale-95 transition-transform group">
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-600 group-hover:bg-gray-900 group-hover:text-white transition-colors">
+                    <Settings size={20} />
+                  </div>
+                  <span className="text-sm font-black text-gray-700 uppercase tracking-widest">Security</span>
+                </div>
+                <ChevronRight size={18} className="text-gray-300" />
+              </button>
+              <button 
+                onClick={() => signOut(auth)}
+                className="w-full bg-red-50 p-5 rounded-3xl border border-red-100 flex items-center justify-between active:scale-95 transition-transform group"
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="w-10 h-10 bg-white rounded-2xl flex items-center justify-center text-red-600">
+                    <LogOut size={20} />
+                  </div>
+                  <span className="text-sm font-black text-red-600 uppercase tracking-widest">Logout</span>
+                </div>
+                <ChevronRight size={18} className="text-red-200" />
+              </button>
+            </div>
+
+            <div className="text-center pt-4">
+              <p className="text-[8px] font-black text-gray-300 uppercase tracking-[0.2em]">Alif Laila Admin v2.0.4</p>
             </div>
           </div>
         );
@@ -2787,7 +3696,7 @@ function AlifLailaApp() {
 
       {/* Bottom Nav */}
       {activeTab !== 'cart' && (
-        <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} role={profile?.role || 'customer'} />
+        <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} role={profile?.role || 'customer'} isAdminRoute={isAdminRoute} />
       )}
     </div>
   );
