@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { initializeFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getMessaging } from 'firebase/messaging';
 import appletConfig from '../firebase-applet-config.json';
 
 // Use the provisioned applet config
@@ -17,11 +18,14 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 
 // Initialize Firestore with long polling to avoid connection issues in some environments
+console.log("Initializing Firestore with database ID:", firebaseConfig.firestoreDatabaseId);
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
 }, firebaseConfig.firestoreDatabaseId);
 
 export const auth = getAuth(app);
+export const messaging = typeof window !== 'undefined' ? getMessaging(app) : null;
+console.log("Firebase Auth and Messaging initialized");
 
 // Connection test
 async function testConnection() {

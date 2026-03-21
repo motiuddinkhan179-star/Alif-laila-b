@@ -1,5 +1,5 @@
 {
   "name": "Alif Laila",
   "description": "A mobile-first marketplace connecting local sellers with customers. Features location-based discovery, secure payments, and seller/admin panels.",
-  "requestFramePermissions": ["geolocation"]
+  "requestFramePermissions": ["geolocation", "notifications"]
 }

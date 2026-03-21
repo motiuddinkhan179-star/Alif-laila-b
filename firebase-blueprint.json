@@ -9,7 +9,7 @@
         "name": { "type": "string" },
         "email": { "type": "string" },
         "mobile": { "type": "string" },
-        "role": { "type": "string", "enum": ["customer", "seller", "admin"] },
+        "role": { "type": "string", "enum": ["customer", "seller", "admin", "delivery_boy"] },
         "location": {
           "type": "object",
           "properties": {
@@ -20,7 +20,12 @@
         "shopName": { "type": "string" },
         "walletBalance": { "type": "number" },
         "status": { "type": "string", "enum": ["pending", "approved", "blocked"] },
-        "upiId": { "type": "string" }
+        "upiId": { "type": "string" },
+        "sellerId": { "type": "string", "description": "ID of the seller who added this delivery boy" },
+        "isOnline": { "type": "boolean" },
+        "paymentType": { "type": "string", "enum": ["fixed", "per_delivery"] },
+        "salary": { "type": "number", "description": "Fixed salary if paymentType is fixed" },
+        "deliveryCharge": { "type": "number", "description": "Charge per delivery if applicable" }
       },
       "required": ["uid", "name", "role"]
     },
@@ -60,9 +65,11 @@
         "totalAmount": { "type": "number" },
         "platformFee": { "type": "number" },
         "sellerAmount": { "type": "number" },
-        "status": { "type": "string", "enum": ["pending", "accepted", "out_for_delivery", "delivered", "rejected"] },
+        "status": { "type": "string", "enum": ["pending", "accepted", "ready", "out_for_delivery", "delivered", "rejected"] },
         "createdAt": { "type": "string", "format": "date-time" },
-        "paymentStatus": { "type": "string", "enum": ["pending", "paid"] }
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid"] },
+        "deliveryBoyId": { "type": "string" },
+        "deliveryCharge": { "type": "number" }
       },
       "required": ["customerId", "sellerId", "items", "totalAmount"]
     },

@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { Component, useState, useEffect, useMemo } from 'react';
+import React, { Component, useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Home, 
   Search, 
@@ -38,7 +38,10 @@ import {
   Users,
   TrendingUp,
   PieChart,
-  Activity
+  Activity,
+  Info,
+  Volume2,
+  Navigation
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -55,6 +58,201 @@ import {
   Bar,
   Cell
 } from 'recharts';
+import { GoogleMap, useJsApiLoader, MarkerF, Autocomplete, InfoWindow } from '@react-google-maps/api';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix Leaflet marker icon issue
+// @ts-ignore
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+// --- Leaflet Map Component ---
+const LeafletMap = ({ center, onLocationChange, mapType, setMapType, setDetectedAddress, isGeocoding, sellers }: { 
+  center: { lat: number; lng: number }, 
+  onLocationChange: (lat: number, lng: number) => void,
+  mapType: 'roadmap' | 'satellite' | 'hybrid',
+  setMapType: (type: 'roadmap' | 'satellite' | 'hybrid') => void,
+  setDetectedAddress: (addr: string) => void,
+  isGeocoding: boolean,
+  sellers: UserProfile[]
+}) => {
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Shop Icon for Leaflet
+  const shopIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/606/606363.png', // Shop icon
+    iconSize: [32, 32],
+    iconAnchor: [16, 32],
+    popupAnchor: [0, -32],
+  });
+
+  const MapEvents = () => {
+    const map = useMap();
+    useMapEvents({
+      dragstart() {
+        setIsDragging(true);
+        setDetectedAddress('Moving map...');
+      },
+      dragend() {
+        setIsDragging(false);
+        const newCenter = map.getCenter();
+        onLocationChange(newCenter.lat, newCenter.lng);
+      },
+      zoomstart() {
+        setIsDragging(true);
+      },
+      zoomend() {
+        setIsDragging(false);
+        const newCenter = map.getCenter();
+        onLocationChange(newCenter.lat, newCenter.lng);
+      }
+    });
+    return null;
+  };
+
+  const ChangeView = ({ center }: { center: [number, number] }) => {
+    const map = useMap();
+    useEffect(() => {
+      map.setView(center, 18);
+    }, [center, map]);
+    return null;
+  };
+
+  const LocateButton = () => {
+    const map = useMap();
+    return (
+      <button 
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDetectedAddress('Locating you...');
+          navigator.geolocation.getCurrentPosition((pos) => {
+            const { latitude, longitude } = pos.coords;
+            onLocationChange(latitude, longitude);
+            map.setView([latitude, longitude], 18);
+          }, (err) => {
+            console.error('Locate error:', err);
+            setDetectedAddress('Could not find location. Please search manually.');
+          }, { enableHighAccuracy: true });
+        }}
+        className={`absolute bottom-6 right-6 z-[1000] bg-white flex items-center gap-2 py-3 px-5 rounded-full shadow-2xl border-2 border-orange-100 text-orange-600 hover:bg-orange-50 transition-all active:scale-95 group ${!center.lat ? 'animate-pulse' : ''}`}
+        title="Locate Me"
+      >
+        <Navigation size={20} className="group-hover:rotate-45 transition-transform" />
+        <span className="text-xs font-bold uppercase tracking-wider">Locate Me</span>
+      </button>
+    );
+  };
+
+  const MapTypeControl = () => {
+    return (
+      <div className="absolute top-4 right-4 z-[1000] flex flex-col gap-2">
+        <button 
+          onClick={() => setMapType('roadmap')}
+          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg transition-all ${mapType === 'roadmap' ? 'bg-orange-600 text-white' : 'bg-white text-gray-600'}`}
+        >
+          Standard
+        </button>
+        <button 
+          onClick={() => setMapType('satellite')}
+          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg transition-all ${mapType === 'satellite' ? 'bg-orange-600 text-white' : 'bg-white text-gray-600'}`}
+        >
+          Satellite
+        </button>
+        <button 
+          onClick={() => setMapType('hybrid')}
+          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold shadow-lg transition-all ${mapType === 'hybrid' ? 'bg-orange-600 text-white' : 'bg-white text-gray-600'}`}
+        >
+          Hybrid
+        </button>
+      </div>
+    );
+  };
+
+  const getTileUrl = () => {
+    switch(mapType) {
+      case 'satellite': return 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
+      case 'hybrid': return 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
+      default: return 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}';
+    }
+  };
+
+  return (
+    <div className="relative w-full h-full">
+      {/* Ola Style Center Pin */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-full z-[1001] pointer-events-none flex flex-col items-center">
+        <motion.div 
+          animate={{ 
+            y: isDragging ? -20 : 0,
+            scale: isDragging ? 1.1 : 1
+          }}
+          transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+          className="relative"
+        >
+          <div className={`bg-orange-600 text-white p-2 rounded-full shadow-2xl border-2 border-white ${isGeocoding ? 'animate-pulse' : ''}`}>
+            <MapPin size={28} fill="white" />
+          </div>
+          <motion.div 
+            animate={{ 
+              scale: isDragging ? 0.5 : 1,
+              opacity: isDragging ? 0.2 : 0.4
+            }}
+            className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 bg-black rounded-full blur-[1px]" 
+          />
+        </motion.div>
+      </div>
+
+      <MapContainer 
+        center={[center.lat, center.lng]} 
+        zoom={18} 
+        scrollWheelZoom={true}
+        className="w-full h-full"
+        zoomControl={false}
+      >
+        <TileLayer
+          attribution='&copy; Google Maps'
+          url={getTileUrl()}
+          maxZoom={20}
+        />
+        <MapEvents />
+        <ChangeView center={[center.lat, center.lng]} />
+        <LocateButton />
+        <MapTypeControl />
+
+        {/* Seller Markers */}
+        {sellers.map((seller) => (
+          seller.location && (
+            <Marker 
+              key={seller.uid} 
+              position={[seller.location.lat, seller.location.lng]}
+              icon={shopIcon}
+            >
+              <Popup>
+                <div className="p-1">
+                  <p className="font-bold text-orange-600">{seller.shopName || seller.name}</p>
+                  <a 
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(seller.shopAddress || seller.address || '')}`} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-[10px] text-gray-500 hover:text-orange-600 transition-colors block"
+                  >
+                    {seller.shopAddress || seller.address || 'Available Shop'}
+                  </a>
+                </div>
+              </Popup>
+            </Marker>
+          )
+        ))}
+      </MapContainer>
+    </div>
+  );
+};
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -84,7 +282,7 @@ import {
 import { auth, db } from './firebase';
 
 // --- Types ---
-type Role = 'customer' | 'seller' | 'admin';
+type Role = 'customer' | 'seller' | 'admin' | 'delivery_boy';
 
 enum OperationType {
   CREATE = 'create',
@@ -159,6 +357,13 @@ interface UserProfile {
   fullAddress?: string;
   upiId?: string;
   isOnline?: boolean;
+  pushSubscription?: any;
+  createdAt?: string;
+  serverSecret?: string;
+  sellerId?: string;
+  paymentType?: 'fixed' | 'per_delivery';
+  salary?: number;
+  deliveryCharge?: number;
 }
 
 interface Product {
@@ -189,12 +394,14 @@ interface Order {
   platformFee: number;
   sellerAmount: number;
   deliveryFee: number;
+  deliveryCharge?: number;
   paymentMethod: 'cod' | 'online';
   deliveryAddress: string;
   customerMobile: string;
-  status: 'pending' | 'accepted' | 'out_for_delivery' | 'delivered' | 'rejected';
+  status: 'pending' | 'accepted' | 'ready' | 'out_for_delivery' | 'delivered' | 'rejected';
   createdAt: any;
   paymentStatus: 'pending' | 'paid';
+  deliveryBoyId?: string;
 }
 
 interface AppNotification {
@@ -205,6 +412,7 @@ interface AppNotification {
   type: 'order' | 'system' | 'payment';
   read: boolean;
   createdAt: string;
+  serverSecret?: string;
 }
 
 interface Transaction {
@@ -270,7 +478,7 @@ const CountdownTimer = ({ expiryTime }: { expiryTime: string }) => {
   );
 };
 
-const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute }: { activeTab: string, setActiveTab: (t: string) => void, role: Role, isAdminRoute: boolean }) => {
+const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute, setIsAdminRoute }: { activeTab: string, setActiveTab: (t: string) => void, role: Role, isAdminRoute: boolean, setIsAdminRoute: (b: boolean) => void }) => {
   let tabs = [
     { id: 'home', icon: Home, label: 'Home' },
     { id: 'categories', icon: Search, label: 'Categories' },
@@ -281,10 +489,20 @@ const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute }: { activeTab:
 
   if (role === 'seller') {
     tabs = [
+      { id: 'home', icon: Home, label: 'Home' },
       { id: 'seller-dashboard', icon: Store, label: 'Dashboard' },
       { id: 'seller-products', icon: Plus, label: 'Products' },
+      { id: 'delivery-boys', icon: Users, label: 'Delivery' },
       { id: 'orders', icon: Package, label: 'Orders' },
-      { id: 'wallet', icon: Wallet, label: 'Wallet' },
+      { id: 'account', icon: User, label: 'Account' },
+    ];
+  }
+
+  if (role === 'delivery_boy') {
+    tabs = [
+      { id: 'home', icon: Home, label: 'Home' },
+      { id: 'delivery-dashboard', icon: LayoutDashboard, label: 'Tasks' },
+      { id: 'orders', icon: Package, label: 'History' },
       { id: 'account', icon: User, label: 'Account' },
     ];
   }
@@ -294,8 +512,8 @@ const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute }: { activeTab:
       { id: 'admin-dashboard', icon: LayoutDashboard, label: 'Dash' },
       { id: 'admin-orders', icon: Package, label: 'Orders' },
       { id: 'admin-sellers', icon: Users, label: 'Sellers' },
-      { id: 'admin-customers', icon: User, label: 'Users' },
       { id: 'admin-analytics', icon: BarChart3, label: 'Stats' },
+      { id: 'exit-admin', icon: LogOut, label: 'Exit' },
     ];
   }
 
@@ -304,7 +522,15 @@ const BottomNav = ({ activeTab, setActiveTab, role, isAdminRoute }: { activeTab:
       {tabs.map((tab) => (
         <button
           key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
+          onClick={() => {
+            if (tab.id === 'exit-admin') {
+              setIsAdminRoute(false);
+              setActiveTab('home');
+              window.location.hash = '';
+            } else {
+              setActiveTab(tab.id);
+            }
+          }}
           className={`flex flex-col items-center space-y-1 transition-all duration-300 relative ${
             activeTab === tab.id ? 'text-orange-600 scale-110' : 'text-gray-400 hover:text-gray-600'
           }`}
@@ -383,6 +609,8 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 }
 
+const GOOGLE_MAPS_LIBRARIES: ("places" | "drawing" | "geometry" | "visualization")[] = ["places"];
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -395,6 +623,7 @@ function AlifLailaApp() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [initError, setInitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('home');
   const [isAdminRoute, setIsAdminRoute] = useState(window.location.hash === '#/admin');
   
@@ -416,8 +645,10 @@ function AlifLailaApp() {
 
   useEffect(() => {
     if (isAdminRoute && profile && profile.role !== 'admin') {
-      alert('Access Denied: You do not have administrator privileges.');
-      signOut(auth);
+      showToast('Access Denied: You do not have administrator privileges.', 'error');
+      setIsAdminRoute(false);
+      setActiveTab('home');
+      window.location.hash = '';
     }
   }, [isAdminRoute, profile]);
 
@@ -435,10 +666,113 @@ function AlifLailaApp() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSellerForm, setShowSellerForm] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  const [lastNotifiedOrderId, setLastNotifiedOrderId] = useState<string | null>(null);
   const [withdrawalAmount, setWithdrawalAmount] = useState<string>('');
   const [depositAmount, setDepositAmount] = useState<string>('');
   const [upiId, setUpiId] = useState<string>('');
+  interface Toast {
+    id: string;
+    title?: string;
+    message: string;
+    type: 'success' | 'error' | 'info' | 'warning';
+    duration?: number;
+  }
+
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const addToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info', title?: string, duration: number = 4000) => {
+    const id = Math.random().toString(36).substring(2, 9);
+    const newToast: Toast = { id, message, type, title, duration };
+    
+    setToasts(prev => [...prev, newToast]);
+
+    // Play sound based on type
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      if (type === 'success') {
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.1);
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      } else if (type === 'error') {
+        oscillator.type = 'sawtooth';
+        oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime + 0.2);
+        gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+      } else {
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(660, audioCtx.currentTime);
+        gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+      }
+
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.5);
+    } catch (e) {
+      console.warn('Audio context not supported or blocked');
+    }
+
+    setTimeout(() => {
+      removeToast(id);
+    }, duration);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
+
+  // Keep showToast for backward compatibility but map it to addToast
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    addToast(message, type);
+  };
+
   const [detectedAddress, setDetectedAddress] = useState<string>('');
+  const [manualAddress, setManualAddress] = useState<string>('');
+  const [isLocating, setIsLocating] = useState(false);
+  const [showMapModal, setShowMapModal] = useState(false);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const [autocomplete, setAutocomplete] = useState<google.maps.places.Autocomplete | null>(null);
+  const [mapAuthError, setMapAuthError] = useState(false);
+  const [useFreeMap, setUseFreeMap] = useState(false);
+  const [mapType, setMapType] = useState<'roadmap' | 'satellite' | 'hybrid'>('roadmap');
+  const [freeSearchQuery, setFreeSearchQuery] = useState('');
+  const [freeSearchResults, setFreeSearchResults] = useState<any[]>([]);
+  const [isSearchingFree, setIsSearchingFree] = useState(false);
+  const [isGeocoding, setIsGeocoding] = useState(false);
+  const geocodeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const [selectedSeller, setSelectedSeller] = useState<UserProfile | null>(null);
+
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
+
+  const { isLoaded: isGoogleMapsLoaded, loadError } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: googleMapsApiKey,
+    libraries: GOOGLE_MAPS_LIBRARIES
+  });
+
+  useEffect(() => {
+    if (googleMapsApiKey) {
+      console.log("Google Maps API Key detected:", googleMapsApiKey.substring(0, 8) + "...");
+    } else {
+      console.warn("Google Maps API Key is missing. Please set VITE_GOOGLE_MAPS_API_KEY in Secrets.");
+    }
+  }, [googleMapsApiKey]);
+
+  if (loadError) {
+    console.error("Google Maps Load Error:", loadError);
+  }
   const [addressFormData, setAddressFormData] = useState({
     address: '',
     mobile: ''
@@ -455,71 +789,106 @@ function AlifLailaApp() {
 
   // --- Auth & Profile ---
   useEffect(() => {
+    // @ts-ignore
+    window.gm_authFailure = () => {
+      console.error("Google Maps authentication failed.");
+      setMapAuthError(true);
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log("Auth useEffect mounted");
     let unsubscribeProfile: (() => void) | null = null;
     
     const unsubscribeAuth = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        setUser(u);
-        const docRef = doc(db, 'users', u.uid);
-        
-        // Initial check and creation if needed
-        try {
-          const docSnap = await getDoc(docRef);
-          if (!docSnap.exists()) {
-            // Check if there's a pre-approved profile for this email
-            const q = query(collection(db, 'users'), where('email', '==', u.email?.toLowerCase()));
-            const querySnap = await getDocs(q);
-            
-            let initialProfile: UserProfile;
-
-            if (!querySnap.empty) {
-              // Claim the pre-approved profile
-              const preProfile = querySnap.docs[0].data() as UserProfile;
-              initialProfile = {
-                ...preProfile,
-                uid: u.uid // Update to actual Auth UID
-              };
-              // Delete the temporary pre-approved doc
-              await deleteDoc(doc(db, 'users', querySnap.docs[0].id));
+      console.log("onAuthStateChanged fired, user:", u?.email || "null");
+      try {
+        if (u) {
+          setUser(u);
+          const docRef = doc(db, 'users', u.uid);
+          
+          // Initial check and creation if needed
+          try {
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+              const p = docSnap.data() as UserProfile;
+              // Migration: If old admin email is still admin, change to seller
+              if (p.role === 'admin' && u.email?.toLowerCase() !== 'khanmohammadahmad1@gmail.com' && 
+                  (u.email?.toLowerCase() === 'khanmohammadahmad597@gmail.com' || u.email?.toLowerCase() === 'khanmohammadahmad@gmail.com' || u.email?.toLowerCase() === 'khanmohammadahmad3@gmail.com')) {
+                await updateDoc(docRef, { role: 'seller' });
+              }
             } else {
-              // Create new default profile
-              initialProfile = {
-                uid: u.uid,
-                name: u.displayName || u.email?.split('@')[0] || 'User',
-                email: u.email || '',
-                mobile: u.phoneNumber || '',
-                role: (u.email === 'khanmohammadahmad597@gmail.com') ? 'admin' : 'customer',
-                walletBalance: 0,
-                status: 'approved'
-              };
+              // Check if there's a pre-approved profile for this email
+              const q = query(collection(db, 'users'), where('email', '==', u.email?.toLowerCase()));
+              const querySnap = await getDocs(q);
+              
+              let initialProfile: UserProfile;
+
+              if (!querySnap.empty) {
+                // Claim the pre-approved profile
+                const preProfile = querySnap.docs[0].data() as UserProfile;
+                initialProfile = {
+                  ...preProfile,
+                  uid: u.uid // Update to actual Auth UID
+                };
+                // Delete the temporary pre-approved doc
+                await deleteDoc(doc(db, 'users', querySnap.docs[0].id));
+              } else {
+                // Create new default profile
+                initialProfile = {
+                  uid: u.uid,
+                  name: u.displayName || u.email?.split('@')[0] || 'User',
+                  email: u.email || '',
+                  mobile: u.phoneNumber || '',
+                  role: (u.email?.toLowerCase() === 'khanmohammadahmad1@gmail.com') ? 'admin' : 
+                        (u.email?.toLowerCase() === 'khanmohammadahmad597@gmail.com' || u.email?.toLowerCase() === 'khanmohammadahmad@gmail.com' || u.email?.toLowerCase() === 'khanmohammadahmad3@gmail.com') ? 'seller' : 'customer',
+                  walletBalance: 0,
+                  isOnline: true,
+                  status: 'approved',
+                  createdAt: new Date().toISOString()
+                };
+              }
+              
+              await setDoc(docRef, initialProfile);
+              setProfile(initialProfile);
             }
-            
-            await setDoc(docRef, initialProfile);
-            setProfile(initialProfile);
+          } catch (error) {
+            console.error("Profile fetch/create error:", error);
+            // Don't throw here, let the listener handle it or just proceed
           }
-        } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `users/${u.uid}`);
+
+          // Real-time profile listener
+          unsubscribeProfile = onSnapshot(docRef, (docSnap) => {
+            if (docSnap.exists()) {
+              const p = { uid: docSnap.id, ...docSnap.data() } as UserProfile;
+              if (isAdminRoute && p.role !== 'admin') {
+                showToast('Access Denied: You do not have administrator privileges.', 'error');
+                setIsAdminRoute(false);
+                setActiveTab('home');
+                window.location.hash = '';
+                return;
+              }
+              setProfile(p);
+            }
+          }, (error) => {
+            console.error("Profile listener error:", error);
+            // Handle permission error gracefully
+            if (error.message.includes('permission')) {
+              setInitError("Permission denied while fetching profile. Please check Firestore rules.");
+            }
+          });
+
+        } else {
+          setUser(null);
+          setProfile(null);
+          if (unsubscribeProfile) unsubscribeProfile();
         }
-
-        // Real-time profile listener
-        unsubscribeProfile = onSnapshot(docRef, (docSnap) => {
-          if (docSnap.exists()) {
-            const p = docSnap.data() as UserProfile;
-            if (isAdminRoute && p.role !== 'admin') {
-              alert('Access Denied: You do not have administrator privileges.');
-              signOut(auth);
-              return;
-            }
-            setProfile(p);
-          }
-        }, (error) => handleFirestoreError(error, OperationType.GET, `users/${u.uid}`));
-
-      } else {
-        setUser(null);
-        setProfile(null);
-        if (unsubscribeProfile) unsubscribeProfile();
+      } catch (err) {
+        console.error("Auth state change error:", err);
+        setInitError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => {
@@ -528,26 +897,349 @@ function AlifLailaApp() {
     };
   }, []);
 
-  // --- Geolocation ---
   useEffect(() => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(async (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        setLocation({ lat, lng });
-        
-        // Reverse Geocode
-        try {
-          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
-          const data = await response.json();
-          setDetectedAddress(data.display_name || 'Location Detected');
-        } catch (error) {
-          console.error('Geocoding error:', error);
-          setDetectedAddress('Location Detected');
-        }
-      });
+    if ("Notification" in window) {
+      setNotificationPermission(Notification.permission);
     }
   }, []);
+
+  const requestNotificationPermission = async () => {
+    if ("Notification" in window) {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === 'granted') {
+        showToast('Push notifications enabled', 'success');
+      }
+    }
+  };
+
+  // --- Audio Notifications for Sellers ---
+  useEffect(() => {
+    if (profile?.role === 'seller' && isAudioEnabled) {
+      const pendingOrders = orders.filter(o => o.sellerId === profile.uid && o.status === 'pending');
+      
+      if (pendingOrders.length > 0) {
+        // Play sound
+        if (!audioRef.current) {
+          // Using a generic alarm sound. 
+          // TO USE ALIF LAILA SONG: Replace the URL below with your song's direct MP3 link
+          audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+          audioRef.current.loop = true;
+        }
+        
+        const playPromise = audioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(error => {
+            console.error("Audio play failed:", error);
+          });
+        }
+
+        const latestOrder = pendingOrders[0];
+        
+        // Voice Notification (only once per order)
+        if (latestOrder.id !== lastNotifiedOrderId) {
+          if ('speechSynthesis' in window) {
+            const msg = new SpeechSynthesisUtterance();
+            msg.text = `Naya order aaya hai. Kripya ise accept karein. Order amount is ${latestOrder.totalAmount} rupees.`;
+            msg.lang = 'hi-IN'; // Hindi
+            window.speechSynthesis.speak(msg);
+          }
+          setLastNotifiedOrderId(latestOrder.id);
+        }
+
+        // Show Push Notification
+        if (notificationPermission === 'granted') {
+          new Notification("New Order Received!", {
+            body: `Order for ₹${latestOrder.totalAmount}. Please accept it.`,
+            icon: '/favicon.ico',
+            tag: 'new-order'
+          });
+        }
+      } else {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+      }
+    } else {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+    }
+    
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+    };
+  }, [orders, profile, isAudioEnabled]);
+
+  const enableAudio = () => {
+    setIsAudioEnabled(true);
+    // Play a silent sound to unlock audio context
+    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
+    silentAudio.play().catch(() => {});
+    showToast('Audio notifications enabled', 'success');
+  };
+
+  // --- Geolocation ---
+  const updateLocation = (lat: number, lng: number) => {
+    setLocation({ lat, lng });
+    setMapCenter({ lat, lng });
+    
+    if (geocodeTimeoutRef.current) {
+      clearTimeout(geocodeTimeoutRef.current);
+    }
+
+    setIsGeocoding(true);
+    geocodeTimeoutRef.current = setTimeout(async () => {
+      const googleApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+
+      // 1. Try Google Maps Geocoding API first (most reliable)
+      if (googleApiKey) {
+        try {
+          const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${googleApiKey}`);
+          const data = await response.json();
+          
+          if (data.status === 'OK' && data.results.length > 0) {
+            const result = data.results[0];
+            setDetectedAddress(result.formatted_address);
+            setIsGeocoding(false);
+            return;
+          }
+        } catch (error) {
+          console.error('Google Geocoding error:', error);
+        }
+      }
+
+      // 2. Fallback to Nominatim (OpenStreetMap)
+      try {
+        const userEmail = 'khanmohammadahmad597@gmail.com';
+        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&addressdetails=1&email=${encodeURIComponent(userEmail)}&zoom=18&countrycodes=in`, {
+          headers: {
+            'Accept-Language': 'en'
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const addr = data.address;
+          
+          if (addr) {
+            // Deep address components for better detection in India
+            const building = addr.building || addr.office || addr.amenity || addr.house_name || addr.industrial || addr.commercial || addr.shop || addr.mall || addr.hospital || addr.school || addr.university || addr.theatre || addr.cinema || addr.bank || addr.atm || addr.retail || addr.warehouse || addr.factory || addr.temple || addr.mosque || addr.church || addr.construction || addr.emergency || addr.point_of_interest || '';
+            const house = addr.house_number || addr.house_name || addr.flat_number || addr.unit || addr.apartment || addr.block || addr.floor || addr.room || addr.entrance || '';
+            const road = addr.road || addr.street || addr.path || addr.lane || addr.alley || addr.square || addr.highway || addr.tertiary || addr.secondary || addr.primary || addr.residential || addr.track || '';
+            const landmark = addr.landmark || addr.place_of_worship || addr.tourism || addr.monument || addr.heritage || addr.park || addr.garden || addr.attraction || addr.temple || addr.mosque || addr.church || addr.stadium || addr.museum || addr.memorial || addr.fountain || '';
+            
+            const neighbourhood = addr.neighbourhood || addr.residential || addr.allotments || addr.colony || addr.sector || addr.suburb || addr.subdivision || addr.phase || addr.pocket || addr.extension || '';
+            const suburb = addr.suburb || addr['sub-district'] || addr.quarter || addr.city_district || addr.tehsil || addr.taluka || addr.mandal || addr.block || addr.circle || '';
+            const village = addr.village || addr.hamlet || addr.isolated_dwelling || addr.croft || addr.town || addr.locality || addr.municipality || addr.panchayat || '';
+            const cityDistrict = addr.city_district || addr.district || addr.borough || addr.county || addr.state_district || addr.region || addr.division || '';
+            const city = addr.city || addr.town || addr.municipality || addr.city_block || addr.metropolis || addr.village || '';
+            const state = addr.state || addr.province || addr.region || addr.state_district || addr.territory || '';
+            const country = addr.country || '';
+            const postcode = addr.postcode || '';
+
+            const addressParts = [];
+            if (landmark) addressParts.push(`Near ${landmark}`);
+            if (building && building !== landmark) addressParts.push(building);
+            if (house && house !== building && house !== landmark) {
+              const houseDisplay = /^\d+$/.test(house) ? `House No: ${house}` : house;
+              addressParts.push(houseDisplay);
+            }
+            if (road) addressParts.push(road);
+            if (neighbourhood) addressParts.push(neighbourhood);
+            if (suburb && suburb !== neighbourhood) addressParts.push(suburb);
+            if (village && village !== suburb && village !== neighbourhood) addressParts.push(village);
+            if (cityDistrict && cityDistrict !== city && cityDistrict !== suburb) addressParts.push(cityDistrict);
+            if (city) addressParts.push(city);
+            if (state) addressParts.push(state);
+            if (country && country !== 'India') addressParts.push(country);
+            if (postcode) addressParts.push(postcode);
+            
+            const fullAddr = addressParts.filter(Boolean).join(', ');
+            setDetectedAddress(fullAddr || data.display_name || 'Location Detected');
+            setIsGeocoding(false);
+            return;
+          }
+        }
+      } catch (error) {
+        console.warn('Nominatim Geocoding error (falling back):', error);
+      }
+
+      // 3. Fallback to BigDataCloud (Very reliable, no key needed for basic usage)
+      try {
+        const response = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`);
+        if (response.ok) {
+          const data = await response.json();
+          const parts = [];
+          if (data.locality) parts.push(data.locality);
+          if (data.principalSubdivision) parts.push(data.principalSubdivision);
+          if (data.countryName) parts.push(data.countryName);
+          
+          if (parts.length > 0) {
+            setDetectedAddress(parts.join(', '));
+            setIsGeocoding(false);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('BigDataCloud error:', error);
+      }
+
+      // 4. Secondary Fallback to Geocode.maps.co
+      try {
+        const response = await fetch(`https://geocode.maps.co/reverse?lat=${lat}&lon=${lng}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.display_name) {
+            setDetectedAddress(data.display_name);
+            setIsGeocoding(false);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Geocode.maps.co error:', error);
+      }
+
+      // Final message if all fail
+      if (!detectedAddress) {
+        setDetectedAddress('Location Detected (Please enter address manually)');
+      }
+      setIsGeocoding(false);
+    }, 500); // 0.5 second debounce
+  };
+
+  const refreshLocation = () => {
+    if (!("geolocation" in navigator)) {
+      showToast('Geolocation not supported', 'error');
+      return;
+    }
+
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        await updateLocation(position.coords.latitude, position.coords.longitude);
+        setIsLocating(false);
+        showToast('Location updated', 'success');
+      },
+      (error) => {
+        console.error('Geolocation error:', error);
+        setIsLocating(false);
+        showToast('Failed to get location', 'error');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleFreeSearch = async (query: string) => {
+    if (!query || query.length < 3) return;
+    setIsSearchingFree(true);
+    try {
+      const userEmail = 'khanmohammadahmad597@gmail.com';
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(query)}&addressdetails=1&limit=5&email=${encodeURIComponent(userEmail)}&countrycodes=in`);
+      if (response.ok) {
+        const data = await response.json();
+        setFreeSearchResults(data);
+        setIsSearchingFree(false);
+        return;
+      }
+    } catch (error) {
+      console.warn('Nominatim search error (falling back):', error);
+    }
+
+    // Secondary fallback for search (Geocode.maps.co)
+    try {
+      const response = await fetch(`https://geocode.maps.co/search?q=${encodeURIComponent(query)}`);
+      if (response.ok) {
+        const data = await response.json();
+        setFreeSearchResults(data);
+        setIsSearchingFree(false);
+        return;
+      }
+    } catch (error) {
+      console.error('Secondary search error:', error);
+    }
+
+    showToast('Search failed', 'error');
+    setIsSearchingFree(false);
+  };
+
+  useEffect(() => {
+    if ("geolocation" in navigator) {
+      setIsLocating(true);
+      const watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          updateLocation(position.coords.latitude, position.coords.longitude);
+          setIsLocating(false);
+        },
+        (error) => {
+          console.error('Geolocation watch error:', error);
+          setIsLocating(false);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+      );
+      
+      return () => navigator.geolocation.clearWatch(watchId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showMapModal || showAddressModal) {
+      if (isGoogleMapsLoaded && !mapAuthError && googleMapsApiKey) {
+        setUseFreeMap(false);
+      } else {
+        setUseFreeMap(true);
+      }
+      refreshLocation();
+    }
+  }, [showMapModal, showAddressModal, isGoogleMapsLoaded, mapAuthError, googleMapsApiKey]);
+
+  // --- Push Notifications ---
+  const subscribeToPushNotifications = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      console.warn('Push notifications not supported');
+      return;
+    }
+
+    try {
+      // Explicitly request permission first
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        console.warn('Notification permission denied');
+        return;
+      }
+
+      const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+      console.log('Service Worker registered:', registration);
+
+      // Wait for service worker to be ready
+      await navigator.serviceWorker.ready;
+
+      // Get VAPID public key from server
+      const response = await fetch('/api/vapid-public-key');
+      const { publicKey } = await response.json();
+
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: publicKey
+      });
+
+      console.log('Push Subscription:', subscription);
+      
+      // Store subscription in profile
+      if (profile && JSON.stringify(profile.pushSubscription) !== JSON.stringify(subscription)) {
+        await handleUpdateProfileDoc({ pushSubscription: subscription.toJSON() });
+      }
+    } catch (error) {
+      console.error('Error subscribing to push notifications:', error);
+      if (error instanceof Error && error.message.includes('permission denied')) {
+        alert('Notification permission was denied. Please enable notifications in your browser settings and try again. If you are using an iframe, try opening the app in a new tab.');
+      }
+    }
+  };
 
   // --- Data Fetching ---
   useEffect(() => {
@@ -578,7 +1270,7 @@ function AlifLailaApp() {
       : query(collection(db, 'users'), where('role', '==', 'seller'), where('status', '==', 'approved'));
     
     const unsubSellers = onSnapshot(qSellers, (snapshot) => {
-      const sData = snapshot.docs.map(doc => doc.data() as UserProfile);
+      const sData = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile));
       setSellers(sData);
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'users'));
 
@@ -632,10 +1324,12 @@ function AlifLailaApp() {
         message,
         type,
         read: false,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        serverSecret: 'alif-laila-push-secret-2026'
       });
     } catch (error) {
       console.error("Error sending notification:", error);
+      handleFirestoreError(error, OperationType.WRITE, 'notifications');
     }
   };
 
@@ -647,12 +1341,6 @@ function AlifLailaApp() {
       } catch (error) {
         console.error("Error marking notification as read:", error);
       }
-    }
-  };
-
-  const requestNotificationPermission = () => {
-    if ("Notification" in window) {
-      Notification.requestPermission();
     }
   };
 
@@ -714,10 +1402,13 @@ function AlifLailaApp() {
 
   const toggleOnline = async () => {
     if (!profile) return;
-    const newStatus = !profile.isOnline;
+    const currentStatus = profile.isOnline !== false;
+    const newStatus = !currentStatus;
     try {
       await updateDoc(doc(db, 'users', profile.uid), { isOnline: newStatus });
+      showToast(`You are now ${newStatus ? 'Online' : 'Offline'}`, 'success');
     } catch (error) {
+      console.error("Toggle online error:", error);
       handleFirestoreError(error, OperationType.UPDATE, `users/${profile.uid}`);
     }
   };
@@ -725,7 +1416,7 @@ function AlifLailaApp() {
   const addSellerInstantly = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSellerData.email || !newSellerData.name || !newSellerData.shopName) {
-      alert('Please fill required fields');
+      showToast('Please fill required fields', 'error');
       return;
     }
 
@@ -739,6 +1430,7 @@ function AlifLailaApp() {
         email: newSellerData.email.toLowerCase(),
         role: 'seller',
         status: 'approved',
+        isOnline: true,
         mobile: newSellerData.mobile,
         shopName: newSellerData.shopName,
         shopAddress: newSellerData.shopAddress,
@@ -769,10 +1461,10 @@ function AlifLailaApp() {
         deliveryFee: 40
       });
       
-      alert('Seller added successfully! They can now log in with this email.');
+      showToast('Seller added successfully! They can now log in with this email.', 'success');
     } catch (error) {
       console.error('Error adding seller:', error);
-      alert('Failed to add seller');
+      showToast('Failed to add seller', 'error');
     }
   };
 
@@ -796,6 +1488,7 @@ function AlifLailaApp() {
       }
       return [...prev, { productId: product.id, name: product.name, price: product.price, quantity: 1 }];
     });
+    addToast(`${product.name} added to cart`, 'success', 'Cart Updated');
   };
 
   const removeFromCart = (productId: string) => {
@@ -834,7 +1527,7 @@ function AlifLailaApp() {
     const totalAmount = subtotal + deliveryFee + PLATFORM_FEE;
 
     if (paymentMethod === 'online' && profile.walletBalance < totalAmount) {
-      alert('Insufficient wallet balance for online payment. Please add money or use COD.');
+      showToast('Insufficient wallet balance for online payment. Please add money or use COD.', 'error');
       return;
     }
     
@@ -844,6 +1537,7 @@ function AlifLailaApp() {
       items: cart,
       totalAmount,
       deliveryFee,
+      deliveryCharge: deliveryFee, // Default delivery charge for boy is the fee customer pays
       paymentMethod,
       deliveryAddress: profile.address,
       customerMobile: profile.mobile,
@@ -874,6 +1568,7 @@ function AlifLailaApp() {
       const docRef = await addDoc(collection(db, 'orders'), orderData);
       setCart([]);
       setActiveTab('orders');
+      addToast('Your order has been placed successfully!', 'success', 'Order Confirmed');
       
       // Notify Seller
       await sendNotification(
@@ -890,7 +1585,7 @@ function AlifLailaApp() {
   const saveAddress = async () => {
     if (!profile) return;
     if (!addressFormData.address || !addressFormData.mobile) {
-      alert('Address and Mobile are required!');
+      showToast('Address and Mobile are required!', 'error');
       return;
     }
     try {
@@ -907,7 +1602,7 @@ function AlifLailaApp() {
   const depositMoney = async () => {
     const amount = Number(depositAmount);
     if (!profile || isNaN(amount) || amount <= 0) {
-      alert('Invalid deposit amount');
+      showToast('Invalid deposit amount', 'error');
       return;
     }
 
@@ -932,7 +1627,7 @@ function AlifLailaApp() {
         walletBalance: (profile.walletBalance || 0) + amount
       });
 
-      alert(`₹${amount} added to your wallet successfully!`);
+      addToast(`₹${amount} added to your wallet successfully!`, 'success', 'Wallet Updated');
       setDepositAmount('');
       setActiveTab('wallet');
     } catch (error) {
@@ -954,7 +1649,7 @@ function AlifLailaApp() {
         'payment'
       );
       
-      alert('Withdrawal approved and marked as completed.');
+      showToast('Withdrawal approved and marked as completed.', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `transactions/${transactionId}`);
     }
@@ -984,7 +1679,7 @@ function AlifLailaApp() {
         'payment'
       );
       
-      alert('Withdrawal rejected and amount refunded.');
+      showToast('Withdrawal rejected and amount refunded.', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `transactions/${transactionId}`);
     }
@@ -993,13 +1688,13 @@ function AlifLailaApp() {
   const requestWithdrawal = async () => {
     const amount = Number(withdrawalAmount);
     if (!profile || isNaN(amount) || amount <= 0 || amount > profile.walletBalance) {
-      alert('Invalid withdrawal amount');
+      showToast('Invalid withdrawal amount', 'error');
       return;
     }
 
     const finalUpiId = profile.upiId || upiId;
     if (!finalUpiId) {
-      alert('Please enter your UPI ID');
+      showToast('Please enter your UPI ID', 'error');
       return;
     }
 
@@ -1026,7 +1721,7 @@ function AlifLailaApp() {
       }
       await updateDoc(userRef, updateData);
 
-      alert('Withdrawal request submitted successfully');
+      addToast('Withdrawal request submitted successfully', 'success', 'Request Sent');
       setWithdrawalAmount('');
       setUpiId('');
       setActiveTab('wallet');
@@ -1038,15 +1733,44 @@ function AlifLailaApp() {
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<string | null>(null);
+  const [productSearch, setProductSearch] = useState('');
+
+  const [isAddDeliveryBoyModalOpen, setIsAddDeliveryBoyModalOpen] = useState(false);
+  const [editingDeliveryBoy, setEditingDeliveryBoy] = useState<UserProfile | null>(null);
+  const [newDeliveryBoy, setNewDeliveryBoy] = useState({
+    name: '',
+    email: '',
+    mobile: '',
+    password: '',
+    paymentType: 'per_delivery' as 'fixed' | 'per_delivery',
+    salary: '',
+    deliveryCharge: ''
+  });
+  const [deliveryBoys, setDeliveryBoys] = useState<UserProfile[]>([]);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [orderToAssign, setOrderToAssign] = useState<string | null>(null);
 
   const [newProduct, setNewProduct] = useState({
     name: '',
     price: '',
     category: 'Grocery',
-    description: 'Fresh product from local seller',
+    description: '',
     image: '',
     expiryTime: ''
   });
+
+  const resetNewProduct = () => {
+    setNewProduct({
+      name: '',
+      price: '',
+      category: 'Grocery',
+      description: '',
+      image: '',
+      expiryTime: ''
+    });
+    setEditingProduct(null);
+  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1120,19 +1844,11 @@ function AlifLailaApp() {
       }
 
       setIsAddProductModalOpen(false);
-      setEditingProduct(null);
-      setNewProduct({ 
-        name: '', 
-        price: '', 
-        category: 'Grocery', 
-        description: 'Fresh product from local seller',
-        image: '',
-        expiryTime: ''
-      });
-      alert(editingProduct ? 'Product updated successfully!' : 'Product created successfully!');
+      resetNewProduct();
+      addToast(editingProduct ? 'Product updated successfully!' : 'Product created successfully!', 'success', 'Inventory Updated');
     } catch (error) {
       console.error("Error saving product:", error);
-      alert("Failed to save product. Please check your connection.");
+      showToast("Failed to save product. Please check your connection.", 'error');
       handleFirestoreError(error, OperationType.WRITE, 'products');
     } finally {
       setIsUploading(false);
@@ -1155,19 +1871,101 @@ function AlifLailaApp() {
   const deleteProduct = async (productId: string) => {
     try {
       await deleteDoc(doc(db, 'products', productId));
+      setProductToDelete(null);
+      addToast('Product deleted successfully!', 'success', 'Inventory Updated');
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
     }
   };
 
-  const blockUser = async (userId: string, currentStatus: string) => {
-    const newStatus = currentStatus === 'blocked' ? 'approved' : 'blocked';
+  const handleAddDeliveryBoy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile?.uid) return;
+    
+    setIsUploading(true);
     try {
-      await updateDoc(doc(db, 'users', userId), { status: newStatus });
+      const dboyData: any = {
+        name: newDeliveryBoy.name,
+        email: newDeliveryBoy.email,
+        mobile: newDeliveryBoy.mobile,
+        role: 'delivery_boy',
+        sellerId: profile.uid,
+        status: 'approved',
+        isOnline: false,
+        paymentType: newDeliveryBoy.paymentType,
+        salary: newDeliveryBoy.paymentType === 'fixed' ? Number(newDeliveryBoy.salary) : 0,
+        deliveryCharge: newDeliveryBoy.paymentType === 'per_delivery' ? Number(newDeliveryBoy.deliveryCharge) : 0,
+        walletBalance: 0,
+        createdAt: new Date().toISOString(),
+        serverSecret: 'alif-laila-push-secret-2026'
+      };
+
+      if (editingDeliveryBoy) {
+        await updateDoc(doc(db, 'users', editingDeliveryBoy.uid), dboyData);
+        addToast('Delivery boy updated successfully', 'success', 'Success');
+      } else {
+        // In a real app, we would use Firebase Admin to create the user
+        // For this demo, we'll just add a document to the users collection
+        // and assume they can log in with the provided email/password
+        const tempUid = `dboy_${Date.now()}`;
+        await setDoc(doc(db, 'users', tempUid), {
+          ...dboyData,
+          uid: tempUid
+        });
+        addToast('Delivery boy added successfully', 'success', 'Success');
+      }
+
+      setIsAddDeliveryBoyModalOpen(false);
+      setEditingDeliveryBoy(null);
+      setNewDeliveryBoy({
+        name: '',
+        email: '',
+        mobile: '',
+        password: '',
+        paymentType: 'per_delivery',
+        salary: '',
+        deliveryCharge: ''
+      });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
+      handleFirestoreError(error, OperationType.WRITE, 'users');
+    } finally {
+      setIsUploading(false);
     }
   };
+
+  const deleteDeliveryBoy = async (uid: string) => {
+    try {
+      await deleteDoc(doc(db, 'users', uid));
+      addToast('Delivery boy removed', 'success', 'Success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `users/${uid}`);
+    }
+  };
+
+  const toggleDeliveryBoyStatus = async (uid: string, currentStatus: boolean) => {
+    try {
+      await updateDoc(doc(db, 'users', uid), { isOnline: !currentStatus });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+    }
+  };
+
+  useEffect(() => {
+    if (profile?.role === 'seller') {
+      const q = query(collection(db, 'users'), where('sellerId', '==', profile.uid), where('role', '==', 'delivery_boy'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const boys = snapshot.docs.map(doc => doc.data() as UserProfile);
+        setDeliveryBoys(boys);
+      });
+      return () => unsubscribe();
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    if (profile && !profile.serverSecret) {
+      handleUpdateProfileDoc({ serverSecret: 'alif-laila-push-secret-2026' });
+    }
+  }, [profile]);
 
   const handleUpdateProfileDoc = async (data: Partial<UserProfile>) => {
     if (!profile) return;
@@ -1182,13 +1980,14 @@ function AlifLailaApp() {
   const submitSellerApplication = async () => {
     if (!profile) return;
     if (!sellerFormData.shopName || !sellerFormData.shopAddress || !sellerFormData.mobile || !sellerFormData.aadhaarNumber || !sellerFormData.panNumber) {
-      alert('Please fill all required fields (Shop Name, Address, Mobile, Aadhaar, and PAN)');
+      showToast('Please fill all required fields (Shop Name, Address, Mobile, Aadhaar, and PAN)', 'error');
       return;
     }
 
     const updated: UserProfile = { 
       ...profile, 
       ...sellerFormData,
+      location: location || profile.location || { lat: 0, lng: 0 },
       status: 'pending',
       applicationDate: new Date().toISOString()
     };
@@ -1207,7 +2006,7 @@ function AlifLailaApp() {
         'system'
       );
       
-      alert('Application submitted! Please wait 24 hours for admin approval.');
+      addToast('Application submitted! Please wait 24 hours for admin approval.', 'success', 'Application Received');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${profile.uid}`);
     }
@@ -1321,6 +2120,42 @@ function AlifLailaApp() {
                 'payment'
               );
             }
+
+            // --- Handle Delivery Boy Payment ---
+            if (order.deliveryBoyId) {
+              const dboyRef = doc(db, 'users', order.deliveryBoyId);
+              const dboySnap = await getDoc(dboyRef);
+              if (dboySnap.exists()) {
+                const dboyData = dboySnap.data() as UserProfile;
+                // Only pay if they are on per_delivery model
+                if (dboyData.paymentType === 'per_delivery') {
+                  const charge = order.deliveryCharge || 0;
+                  if (charge > 0) {
+                    await updateDoc(dboyRef, {
+                      walletBalance: (dboyData.walletBalance || 0) + charge
+                    });
+                    
+                    // Log transaction for delivery boy
+                    await addDoc(collection(db, 'transactions'), {
+                      userId: order.deliveryBoyId,
+                      amount: charge,
+                      type: 'earning',
+                      status: 'completed',
+                      description: `Delivery Charge for Order #${orderId.slice(-6)}`,
+                      createdAt: Timestamp.now()
+                    });
+
+                    // Notify Delivery Boy
+                    await sendNotification(
+                      order.deliveryBoyId,
+                      'Earnings Added',
+                      `₹${charge} added to your wallet for delivery #${orderId.slice(-6).toUpperCase()}`,
+                      'payment'
+                    );
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1332,16 +2167,26 @@ function AlifLailaApp() {
   // --- Filtered Data ---
   const nearbyProducts = useMemo(() => {
     return products.filter(p => {
+      const seller = sellers.find(s => s.uid === p.sellerId);
+      
+      // If seller not found (not approved or not a seller), hide product
+      if (!seller) return false;
+
+      // Filter out products from offline sellers
+      // If isOnline is undefined, we treat it as true (default online)
+      if (seller.isOnline === false) {
+        return false;
+      }
+
       // Distance filter based on seller's delivery radius
       if (location) {
-        const seller = sellers.find(s => s.uid === p.sellerId);
-        if (seller && seller.location) {
+        if (seller.location) {
           const dist = calculateDistance(location.lat, location.lng, seller.location.lat, seller.location.lng);
           const radius = seller.deliveryRadius || 5; // default 5km
           return dist <= radius;
         }
       }
-      return true; // Show if location not available or seller not found (fallback)
+      return true; // Show if location not available (fallback)
     });
   }, [products, location, sellers]);
 
@@ -1354,12 +2199,29 @@ function AlifLailaApp() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-orange-50">
+      <div className="h-screen flex flex-col items-center justify-center bg-orange-50">
         <motion.div 
           animate={{ rotate: 360 }}
           transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-          className="w-12 h-12 border-4 border-orange-600 border-t-transparent rounded-full"
+          className="w-12 h-12 border-4 border-orange-600 border-t-transparent rounded-full mb-4"
         />
+        <p className="text-orange-800 font-medium animate-pulse">Loading Alif Laila...</p>
+      </div>
+    );
+  }
+
+  if (initError) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center p-6 bg-red-50 text-center">
+        <AlertCircle size={64} className="text-red-600 mb-4" />
+        <h2 className="text-2xl font-bold text-red-900 mb-2">Initialization Error</h2>
+        <p className="text-red-700 mb-6">{initError}</p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="bg-red-600 text-white px-6 py-3 rounded-2xl font-bold"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -1504,17 +2366,76 @@ function AlifLailaApp() {
     );
   }
 
+  if (!profile) {
+    return (
+      <div className="min-h-screen bg-orange-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-20 h-20 bg-orange-100 rounded-3xl flex items-center justify-center mb-6">
+          <User size={40} className="text-orange-600" />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Setting up your profile...</h2>
+        <p className="text-gray-500 text-sm mb-8 max-w-xs">We're preparing your Alif Laila experience. This usually takes just a few seconds.</p>
+        <div className="flex flex-col space-y-3 w-full max-w-xs">
+          <button 
+            onClick={() => window.location.reload()}
+            className="bg-orange-600 text-white px-8 py-3 rounded-2xl font-bold shadow-lg shadow-orange-200"
+          >
+            Refresh Page
+          </button>
+          <button 
+            onClick={async () => {
+              if (!user) return;
+              const docRef = doc(db, 'users', user.uid);
+              const initialProfile: UserProfile = {
+                uid: user.uid,
+                name: user.displayName || 'User',
+                email: user.email || '',
+                role: (user.email?.toLowerCase() === 'khanmohammadahmad1@gmail.com') ? 'admin' : 
+                      (user.email?.toLowerCase() === 'khanmohammadahmad597@gmail.com' || user.email?.toLowerCase() === 'khanmohammadahmad@gmail.com' || user.email?.toLowerCase() === 'khanmohammadahmad3@gmail.com') ? 'seller' : 'customer',
+                status: 'approved',
+                walletBalance: 0,
+                createdAt: new Date().toISOString()
+              };
+              try {
+                await setDoc(docRef, initialProfile);
+                setProfile(initialProfile);
+                addToast('Profile created successfully!', 'success', 'Welcome!');
+              } catch (err) {
+                handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+              }
+            }}
+            className="text-orange-600 text-sm font-bold py-2"
+          >
+            Stuck? Click to create profile manually
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const renderContent = () => {
     switch (activeTab) {
       case 'home':
         return (
           <div className="p-4 pb-24 space-y-6">
             <div className="flex justify-between items-center">
-              <div>
+              <div className="flex-1">
                 <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Location</p>
-                <div className="flex items-center text-orange-600 font-bold max-w-[200px]">
+                <div className="flex items-center text-orange-600 font-bold">
                   <MapPin size={16} className="mr-1 flex-shrink-0" />
-                  <span className="truncate text-sm">{detectedAddress || 'Detecting...'}</span>
+                  <span className="truncate text-sm max-w-[180px]">{detectedAddress || 'Detecting...'}</span>
+                  <button 
+                    onClick={() => setShowMapModal(true)}
+                    className="ml-2 p-1 rounded-full hover:bg-orange-50 transition-colors"
+                  >
+                    <Search size={14} />
+                  </button>
+                  <button 
+                    onClick={refreshLocation}
+                    disabled={isLocating}
+                    className={`ml-1 p-1 rounded-full hover:bg-orange-50 transition-colors ${isLocating ? 'animate-spin' : ''}`}
+                  >
+                    <Activity size={14} />
+                  </button>
                 </div>
               </div>
               <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
@@ -1536,38 +2457,67 @@ function AlifLailaApp() {
                 <h3 className="text-lg font-bold text-gray-900">Nearby Products</h3>
                 <button className="text-orange-600 text-sm font-bold">See All</button>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                {filteredProducts.map(product => (
-                  <motion.div 
-                    layoutId={product.id}
-                    key={product.id} 
-                    className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm relative overflow-hidden cursor-pointer"
-                    onClick={() => setSelectedProduct(product)}
-                  >
-                    {product.expiryTime && <CountdownTimer expiryTime={product.expiryTime} />}
-                    <img 
-                      src={product.image || `https://picsum.photos/seed/${product.name}/200/200`} 
-                      alt={product.name} 
-                      className="w-full aspect-square object-cover rounded-xl mb-3"
-                      referrerPolicy="no-referrer"
-                    />
-                    <h4 className="font-bold text-gray-900 text-sm truncate">{product.name}</h4>
-                    <p className="text-gray-500 text-xs mb-2">{product.category}</p>
-                    <div className="flex justify-between items-center">
-                      <span className="text-orange-600 font-bold">₹{product.price}</span>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          addToCart(product);
-                        }}
-                        className="bg-orange-600 text-white p-2 rounded-lg active:scale-90 transition-transform"
-                      >
-                        <Plus size={16} />
-                      </button>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
+              
+              {filteredProducts.length === 0 ? (
+                <div className="bg-white rounded-3xl p-10 text-center border border-dashed border-gray-200">
+                  <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <ShoppingBag className="text-gray-300" size={32} />
+                  </div>
+                  <h4 className="font-bold text-gray-900 mb-1">No Products Found</h4>
+                  <p className="text-gray-500 text-xs mb-4">
+                    {sellers.length === 0 
+                      ? "There are no approved sellers in the system yet." 
+                      : location 
+                        ? "No sellers are currently within your delivery range." 
+                        : "We're looking for products near you..."}
+                  </p>
+                  {profile?.role === 'admin' && sellers.length === 0 && (
+                    <button 
+                      onClick={() => {
+                        window.location.hash = '#/admin';
+                        setIsAdminRoute(true);
+                        setActiveTab('admin-dashboard');
+                      }}
+                      className="text-orange-600 text-xs font-bold underline"
+                    >
+                      Go to Admin to approve sellers
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  {filteredProducts.map(product => (
+                    <motion.div 
+                      layoutId={product.id}
+                      key={product.id} 
+                      className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm relative overflow-hidden cursor-pointer"
+                      onClick={() => setSelectedProduct(product)}
+                    >
+                      {product.expiryTime && <CountdownTimer expiryTime={product.expiryTime} />}
+                      <img 
+                        src={product.image || `https://picsum.photos/seed/${product.name}/200/200`} 
+                        alt={product.name} 
+                        className="w-full aspect-square object-cover rounded-xl mb-3"
+                        referrerPolicy="no-referrer"
+                      />
+                      <h4 className="font-bold text-gray-900 text-sm truncate">{product.name}</h4>
+                      <p className="text-gray-500 text-xs mb-2">{product.category}</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-orange-600 font-bold">₹{product.price}</span>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            addToCart(product);
+                          }}
+                          className="bg-orange-600 text-white p-2 rounded-lg active:scale-90 transition-transform"
+                        >
+                          <Plus size={16} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
 
               {/* Product Preview Modal */}
               <AnimatePresence>
@@ -1602,6 +2552,21 @@ function AlifLailaApp() {
                           <span className="bg-orange-50 text-orange-600 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
                             {selectedProduct.category}
                           </span>
+                        </div>
+                        <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-orange-600 shadow-sm">
+                              <Truck size={20} />
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Delivery Fee</p>
+                              <p className="font-bold text-gray-900">₹{sellers.find(s => s.uid === selectedProduct.sellerId)?.deliveryFee || 0}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Seller</p>
+                            <p className="font-bold text-gray-900 truncate max-w-[120px]">{sellers.find(s => s.uid === selectedProduct.sellerId)?.shopName || 'Local Seller'}</p>
+                          </div>
                         </div>
                         <p className="text-gray-500 leading-relaxed">
                           {selectedProduct.description}
@@ -1800,9 +2765,15 @@ function AlifLailaApp() {
                     <textarea 
                       value={sellerFormData.shopAddress}
                       onChange={(e) => setSellerFormData({...sellerFormData, shopAddress: e.target.value})}
-                      placeholder="Enter full shop address"
+                      placeholder="Shop No, Building Name, Road, Area, City..."
                       className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500 min-h-[100px]"
                     />
+                    <button 
+                      onClick={() => setSellerFormData({...sellerFormData, shopAddress: detectedAddress})}
+                      className="text-[10px] text-orange-600 font-bold mt-1 ml-1"
+                    >
+                      Use Current Location
+                    </button>
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Mobile Number</label>
@@ -1946,6 +2917,18 @@ function AlifLailaApp() {
                 </div>
                 <ChevronRight size={16} className="text-gray-400" />
               </button>
+              {profile?.role === 'seller' && (
+                <button 
+                  onClick={() => setActiveTab('seller-dashboard')}
+                  className="w-full flex items-center justify-between p-4 bg-orange-600 text-white rounded-2xl border border-orange-500 shadow-lg shadow-orange-100"
+                >
+                  <div className="flex items-center space-x-3">
+                    <Store size={20} />
+                    <span className="font-bold text-sm uppercase tracking-widest">Seller Dashboard</span>
+                  </div>
+                  <ChevronRight size={16} className="text-orange-200" />
+                </button>
+              )}
               {profile?.role === 'admin' && (
                 <button 
                   onClick={() => {
@@ -2039,6 +3022,27 @@ function AlifLailaApp() {
                       placeholder="Enter your full delivery address"
                       className="w-full bg-gray-50 border-none rounded-xl p-3 text-sm font-bold focus:ring-2 focus:ring-orange-500 min-h-[80px]"
                     />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Notifications</label>
+                    <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl mt-1">
+                      <span className={`text-sm font-bold ${Notification.permission === 'denied' ? 'text-red-600' : 'text-gray-700'}`}>
+                        {Notification.permission === 'granted' ? 'Enabled' : Notification.permission === 'denied' ? 'Blocked' : 'Disabled'}
+                      </span>
+                      {Notification.permission !== 'granted' && (
+                        <button 
+                          onClick={() => subscribeToPushNotifications()}
+                          className="text-[10px] font-bold text-orange-600 uppercase tracking-widest"
+                        >
+                          {Notification.permission === 'denied' ? 'Retry' : 'Enable'}
+                        </button>
+                      )}
+                    </div>
+                    {Notification.permission === 'denied' && (
+                      <p className="text-[8px] text-red-400 mt-1 ml-1 leading-tight">
+                        Permission was denied. Please reset permissions in your browser settings or try opening the app in a new tab.
+                      </p>
+                    )}
                   </div>
                   {profile?.role === 'seller' && (
                     <>
@@ -2295,18 +3299,64 @@ function AlifLailaApp() {
           <div className="p-4 pb-24 space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold text-gray-900 tracking-tighter uppercase">Seller Dashboard</h2>
-              <button 
-                onClick={toggleOnline}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${
-                  profile?.isOnline 
-                  ? 'bg-green-100 text-green-600 shadow-sm shadow-green-100' 
-                  : 'bg-gray-100 text-gray-400'
-                }`}
-              >
-                <div className={`w-2 h-2 rounded-full ${profile?.isOnline ? 'bg-green-600 animate-pulse' : 'bg-gray-400'}`} />
-                <span>{profile?.isOnline ? 'Online' : 'Offline'}</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                {notificationPermission !== 'granted' && (
+                  <button 
+                    onClick={requestNotificationPermission}
+                    className="p-2 bg-blue-100 text-blue-600 rounded-xl flex items-center space-x-1 animate-bounce"
+                    title="Enable Push Notifications"
+                  >
+                    <Bell size={16} />
+                    <span className="text-[10px] font-bold">Push</span>
+                  </button>
+                )}
+                {!isAudioEnabled && (
+                  <button 
+                    onClick={enableAudio}
+                    className="p-2 bg-orange-100 text-orange-600 rounded-xl flex items-center space-x-1 animate-pulse"
+                    title="Enable Order Sound"
+                  >
+                    <Volume2 size={16} />
+                    <span className="text-[10px] font-bold">Sound</span>
+                  </button>
+                )}
+                <button 
+                  onClick={toggleOnline}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all ${
+                    profile?.isOnline !== false 
+                    ? 'bg-green-100 text-green-600 shadow-sm shadow-green-100' 
+                    : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  <div className={`w-2 h-2 rounded-full ${profile?.isOnline !== false ? 'bg-green-600 animate-pulse' : 'bg-gray-400'}`} />
+                  <span>{profile?.isOnline !== false ? 'Online' : 'Offline'}</span>
+                </button>
+              </div>
             </div>
+
+            {orders.filter(o => o.sellerId === profile.uid && o.status === 'pending').length > 0 && (
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="bg-red-600 rounded-3xl p-6 text-white shadow-xl shadow-red-100 border-4 border-white animate-pulse"
+              >
+                <div className="flex items-center space-x-4">
+                  <div className="p-3 bg-white/20 rounded-2xl">
+                    <AlertCircle size={32} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black uppercase tracking-tighter">New Order Received!</h3>
+                    <p className="text-red-100 text-xs font-bold">Please accept the order to stop the alarm.</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setActiveTab('orders')}
+                  className="w-full mt-4 bg-white text-red-600 py-3 rounded-2xl font-black uppercase tracking-widest text-xs"
+                >
+                  View Orders Now
+                </button>
+              </motion.div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-orange-600 rounded-3xl p-4 text-white shadow-lg shadow-orange-100">
                 <p className="text-orange-100 text-[10px] uppercase font-bold tracking-wider mb-1">Total Earnings</p>
@@ -2359,10 +3409,21 @@ function AlifLailaApp() {
                       )}
                       {order.status === 'accepted' && (
                         <button 
-                          onClick={() => updateOrderStatus(order.id, 'out_for_delivery')}
+                          onClick={() => updateOrderStatus(order.id, 'ready')}
                           className="w-full bg-blue-600 text-white py-2 rounded-xl text-xs font-bold"
                         >
-                          Mark Out for Delivery
+                          Mark Ready for Delivery
+                        </button>
+                      )}
+                      {order.status === 'ready' && (
+                        <button 
+                          onClick={() => {
+                            setOrderToAssign(order.id);
+                            setIsAssignModalOpen(true);
+                          }}
+                          className="w-full bg-purple-600 text-white py-2 rounded-xl text-xs font-bold"
+                        >
+                          Assign Delivery Boy
                         </button>
                       )}
                       {order.status === 'out_for_delivery' && (
@@ -2378,10 +3439,83 @@ function AlifLailaApp() {
                 </div>
               )}
             </div>
+
+            {/* Assign Delivery Boy Modal */}
+            <AnimatePresence>
+              {isAssignModalOpen && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setIsAssignModalOpen(false)}
+                    className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+                  />
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    className="relative bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl"
+                  >
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-bold">Assign Delivery Boy</h3>
+                      <button onClick={() => setIsAssignModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                        <X size={20} />
+                      </button>
+                    </div>
+
+                    <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                      {deliveryBoys.filter(b => b.isOnline).length === 0 ? (
+                        <div className="text-center py-8">
+                          <Users className="mx-auto text-gray-300 mb-2" size={48} />
+                          <p className="text-gray-500 text-sm">No delivery boys are currently online.</p>
+                        </div>
+                      ) : (
+                        deliveryBoys.filter(b => b.isOnline).map(boy => (
+                          <button
+                            key={boy.uid}
+                            onClick={async () => {
+                              if (!orderToAssign) return;
+                              try {
+                                await updateDoc(doc(db, 'orders', orderToAssign), {
+                                  deliveryBoyId: boy.uid,
+                                  status: 'out_for_delivery'
+                                });
+                                showToast(`Order assigned to ${boy.name}`, 'success');
+                                setIsAssignModalOpen(false);
+                                setOrderToAssign(null);
+                              } catch (error) {
+                                showToast('Failed to assign delivery boy', 'error');
+                              }
+                            }}
+                            className="w-full flex items-center justify-between p-4 bg-gray-50 rounded-2xl hover:bg-orange-50 hover:border-orange-200 border border-transparent transition-all"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-xl flex items-center justify-center font-bold">
+                                {boy.name[0]}
+                              </div>
+                              <div className="text-left">
+                                <p className="font-bold text-gray-900">{boy.name}</p>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{boy.mobile}</p>
+                              </div>
+                            </div>
+                            <ChevronRight className="text-gray-400" size={20} />
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
           </div>
         );
 
-      case 'seller-products':
+      case 'seller-products': {
+        const filteredSellerProducts = products
+          .filter(p => p.sellerId === profile?.uid)
+          .filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase()) || p.category.toLowerCase().includes(productSearch.toLowerCase()));
+
         return (
           <div className="p-4 pb-24 space-y-6">
             <div className="flex justify-between items-center">
@@ -2394,7 +3528,59 @@ function AlifLailaApp() {
               </button>
             </div>
 
-            {/* Add Product Modal */}
+            {/* Search Bar */}
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input 
+                type="text"
+                placeholder="Search products or categories..."
+                value={productSearch}
+                onChange={(e) => setProductSearch(e.target.value)}
+                className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-gray-100 rounded-2xl focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all text-sm"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {filteredSellerProducts.length === 0 ? (
+                <div className="col-span-2 bg-white rounded-3xl p-10 text-center border border-dashed border-gray-200">
+                  <Package className="text-gray-300 mx-auto mb-4" size={48} />
+                  <p className="text-gray-500 text-sm">No products found. Add your first product!</p>
+                </div>
+              ) : (
+                filteredSellerProducts.map(product => (
+                  <motion.div 
+                    key={product.id}
+                    layout
+                    className="bg-white rounded-3xl overflow-hidden border border-gray-100 shadow-sm"
+                  >
+                    <div className="relative h-32">
+                      <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
+                      <div className="absolute top-2 right-2 flex gap-1">
+                        <button 
+                          onClick={() => openEditModal(product)}
+                          className="bg-white/90 backdrop-blur-sm p-1.5 rounded-lg text-blue-600 shadow-sm"
+                        >
+                          <Settings size={14} />
+                        </button>
+                        <button 
+                          onClick={() => setProductToDelete(product.id)}
+                          className="bg-white/90 backdrop-blur-sm p-1.5 rounded-lg text-red-600 shadow-sm"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="p-3">
+                      <h4 className="font-bold text-gray-900 text-sm truncate">{product.name}</h4>
+                      <p className="text-orange-600 font-bold text-sm">₹{product.price}</p>
+                      <p className="text-[10px] text-gray-400 mt-1 uppercase font-bold tracking-wider">{product.category}</p>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+
+            {/* Add/Edit Product Modal */}
             <AnimatePresence>
               {isAddProductModalOpen && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
@@ -2402,7 +3588,7 @@ function AlifLailaApp() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    onClick={() => setIsAddProductModalOpen(false)}
+                    onClick={() => { setIsAddProductModalOpen(false); resetNewProduct(); }}
                     className="absolute inset-0 bg-black/40 backdrop-blur-sm"
                   />
                   <motion.div 
@@ -2413,7 +3599,7 @@ function AlifLailaApp() {
                   >
                     <div className="flex justify-between items-center mb-6">
                       <h3 className="text-xl font-bold">{editingProduct ? 'Edit Product' : 'Add New Product'}</h3>
-                      <button onClick={() => { setIsAddProductModalOpen(false); setEditingProduct(null); }} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                      <button onClick={() => { setIsAddProductModalOpen(false); resetNewProduct(); }} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                         <X size={20} />
                       </button>
                     </div>
@@ -2492,8 +3678,9 @@ function AlifLailaApp() {
                         <textarea 
                           value={newProduct.description}
                           onChange={(e) => setNewProduct({...newProduct, description: e.target.value})}
-                          className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all h-20 resize-none"
-                          placeholder="Tell customers about your product..."
+                          className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all resize-none"
+                          rows={3}
+                          placeholder="Tell customers more about this product..."
                         />
                       </div>
                       <button 
@@ -2501,7 +3688,7 @@ function AlifLailaApp() {
                         disabled={isUploading}
                         className={`w-full bg-orange-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg shadow-orange-100 active:scale-95 transition-transform mt-2 ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
                       >
-                        {isUploading ? 'Uploading...' : (editingProduct ? 'Update Product' : 'Create Product')}
+                        {isUploading ? 'Uploading...' : (editingProduct ? 'Update Product' : 'Add Product')}
                       </button>
                     </form>
                   </motion.div>
@@ -2509,31 +3696,350 @@ function AlifLailaApp() {
               )}
             </AnimatePresence>
 
-            <div className="grid grid-cols-2 gap-4">
-              {products.filter(p => p.sellerId === profile?.uid).map(product => (
-                <div key={product.id} className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm relative overflow-hidden">
-                  {product.expiryTime && <CountdownTimer expiryTime={product.expiryTime} />}
-                  <img src={product.image} alt={product.name} className="w-full aspect-square object-cover rounded-xl mb-3" referrerPolicy="no-referrer" />
-                  <h4 className="font-bold text-gray-900 text-sm truncate">{product.name}</h4>
-                  <div className="flex justify-between items-center mt-2">
-                    <span className="text-orange-600 font-bold">₹{product.price}</span>
-                    <div className="flex gap-2">
+            {/* Delete Confirmation Modal */}
+            <AnimatePresence>
+              {productToDelete && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setProductToDelete(null)}
+                    className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+                  />
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    className="relative bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl text-center"
+                  >
+                    <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Trash2 size={32} />
+                    </div>
+                    <h3 className="text-lg font-bold mb-2">Delete Product?</h3>
+                    <p className="text-sm text-gray-500 mb-6">This action cannot be undone. Are you sure?</p>
+                    <div className="flex gap-3">
                       <button 
-                        onClick={() => openEditModal(product)}
-                        className="text-blue-500 p-1 hover:bg-blue-50 rounded-lg transition-colors"
+                        onClick={() => setProductToDelete(null)}
+                        className="flex-1 py-3 rounded-xl font-bold text-gray-500 bg-gray-50 hover:bg-gray-100 transition-colors"
                       >
-                        <Settings size={16} />
+                        Cancel
                       </button>
                       <button 
-                        onClick={() => deleteProduct(product.id)}
-                        className="text-red-500 p-1 hover:bg-red-50 rounded-lg transition-colors"
+                        onClick={() => deleteProduct(productToDelete)}
+                        className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600 shadow-lg shadow-red-100 active:scale-95 transition-transform"
                       >
-                        <Trash2 size={16} />
+                        Delete
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </div>
+        );
+      }
+
+      case 'delivery-boys':
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="text-2xl font-bold text-gray-900">Delivery Boys</h2>
+              <button 
+                onClick={() => {
+                  setEditingDeliveryBoy(null);
+                  setNewDeliveryBoy({
+                    name: '',
+                    email: '',
+                    mobile: '',
+                    password: '',
+                    paymentType: 'per_delivery',
+                    salary: '',
+                    deliveryCharge: ''
+                  });
+                  setIsAddDeliveryBoyModalOpen(true);
+                }}
+                className="bg-orange-600 text-white p-2 rounded-xl shadow-lg shadow-orange-100"
+              >
+                <Plus size={24} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {deliveryBoys.length === 0 ? (
+                <div className="bg-white rounded-3xl p-10 text-center border border-dashed border-gray-200">
+                  <Users className="text-gray-300 mx-auto mb-4" size={48} />
+                  <p className="text-gray-500 text-sm">No delivery boys added yet.</p>
+                </div>
+              ) : (
+                deliveryBoys.map(boy => (
+                  <div key={boy.uid} className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg ${boy.isOnline ? 'bg-green-500' : 'bg-gray-400'}`}>
+                        {boy.name[0]}
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-gray-900">{boy.name}</h4>
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${boy.isOnline ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+                          <span className="text-[10px] text-gray-500 uppercase font-bold">{boy.isOnline ? 'Online' : 'Offline'}</span>
+                        </div>
+                        <p className="text-[10px] text-gray-400 mt-1">
+                          {boy.paymentType === 'fixed' ? `Salary: ₹${boy.salary}` : `Per Delivery: ₹${boy.deliveryCharge}`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => {
+                          setEditingDeliveryBoy(boy);
+                          setNewDeliveryBoy({
+                            name: boy.name,
+                            email: boy.email,
+                            mobile: boy.mobile || '',
+                            password: '',
+                            paymentType: boy.paymentType || 'per_delivery',
+                            salary: boy.salary?.toString() || '',
+                            deliveryCharge: boy.deliveryCharge?.toString() || ''
+                          });
+                          setIsAddDeliveryBoyModalOpen(true);
+                        }}
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+                      >
+                        <Settings size={18} />
+                      </button>
+                      <button 
+                        onClick={() => deleteDeliveryBoy(boy.uid)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-xl transition-colors"
+                      >
+                        <Trash2 size={18} />
                       </button>
                     </div>
                   </div>
+                ))
+              )}
+            </div>
+
+            {/* Add/Edit Delivery Boy Modal */}
+            <AnimatePresence>
+              {isAddDeliveryBoyModalOpen && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setIsAddDeliveryBoyModalOpen(false)}
+                    className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+                  />
+                  <motion.div 
+                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                    animate={{ scale: 1, opacity: 1, y: 0 }}
+                    exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                    className="relative bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl overflow-hidden"
+                  >
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-bold">{editingDeliveryBoy ? 'Edit Delivery Boy' : 'Add Delivery Boy'}</h3>
+                      <button onClick={() => setIsAddDeliveryBoyModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                        <X size={20} />
+                      </button>
+                    </div>
+                    
+                    <form onSubmit={handleAddDeliveryBoy} className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                        <input 
+                          type="text" 
+                          required
+                          value={newDeliveryBoy.name}
+                          onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, name: e.target.value})}
+                          className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                          placeholder="e.g. Rahul Kumar"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                          <input 
+                            type="email" 
+                            required
+                            value={newDeliveryBoy.email}
+                            onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, email: e.target.value})}
+                            className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                            placeholder="rahul@example.com"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Mobile</label>
+                          <input 
+                            type="tel" 
+                            required
+                            value={newDeliveryBoy.mobile}
+                            onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, mobile: e.target.value})}
+                            className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                            placeholder="10-digit number"
+                          />
+                        </div>
+                      </div>
+                      {!editingDeliveryBoy && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Initial Password</label>
+                          <input 
+                            type="password" 
+                            required
+                            value={newDeliveryBoy.password}
+                            onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, password: e.target.value})}
+                            className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                            placeholder="At least 6 characters"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Payment Model</label>
+                        <select 
+                          value={newDeliveryBoy.paymentType}
+                          onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, paymentType: e.target.value as any})}
+                          className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                        >
+                          <option value="per_delivery">Per Delivery Charge</option>
+                          <option value="fixed">Fixed Salary (Pagar)</option>
+                        </select>
+                      </div>
+                      {newDeliveryBoy.paymentType === 'fixed' ? (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Monthly Salary (₹)</label>
+                          <input 
+                            type="number" 
+                            required
+                            value={newDeliveryBoy.salary}
+                            onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, salary: e.target.value})}
+                            className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                            placeholder="e.g. 15000"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Delivery Charge per Order (₹)</label>
+                          <input 
+                            type="number" 
+                            required
+                            value={newDeliveryBoy.deliveryCharge}
+                            onChange={(e) => setNewDeliveryBoy({...newDeliveryBoy, deliveryCharge: e.target.value})}
+                            className="w-full px-4 py-3 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-orange-500 outline-none transition-all"
+                            placeholder="e.g. 30"
+                          />
+                        </div>
+                      )}
+                      <button 
+                        type="submit"
+                        disabled={isUploading}
+                        className={`w-full bg-orange-600 text-white py-4 rounded-2xl font-bold text-lg shadow-lg shadow-orange-100 active:scale-95 transition-transform mt-2 ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        {isUploading ? 'Saving...' : (editingDeliveryBoy ? 'Update' : 'Add Delivery Boy')}
+                      </button>
+                    </form>
+                  </motion.div>
                 </div>
-              ))}
+              )}
+            </AnimatePresence>
+          </div>
+        );
+
+      case 'delivery-dashboard':
+        const readyOrders = orders.filter(o => o.sellerId === profile?.sellerId && o.status === 'ready');
+        const activeTasks = orders.filter(o => o.deliveryBoyId === profile?.uid && (o.status === 'out_for_delivery'));
+
+        return (
+          <div className="p-4 pb-24 space-y-6">
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Delivery Tasks</h2>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`w-2 h-2 rounded-full ${profile?.isOnline ? 'bg-green-500' : 'bg-gray-400'}`}></span>
+                  <span className="text-xs text-gray-500 font-bold uppercase tracking-wider">{profile?.isOnline ? 'Online' : 'Offline'}</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => toggleDeliveryBoyStatus(profile!.uid, profile!.isOnline || false)}
+                className={`px-4 py-2 rounded-xl font-bold text-xs transition-all ${profile?.isOnline ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}
+              >
+                Go {profile?.isOnline ? 'Offline' : 'Online'}
+              </button>
+            </div>
+
+            {activeTasks.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest">Active Delivery</h3>
+                {activeTasks.map(order => (
+                  <div key={order.id} className="bg-orange-50 border-2 border-orange-200 rounded-3xl p-5 shadow-sm">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <p className="text-[10px] font-bold text-orange-600 uppercase tracking-wider">Order #{order.id.slice(-6)}</p>
+                        <h4 className="font-bold text-gray-900 mt-1">{order.deliveryAddress}</h4>
+                      </div>
+                      <div className="bg-orange-600 text-white px-2 py-1 rounded-lg text-[10px] font-bold uppercase">
+                        ₹{order.deliveryCharge || 0} Earn
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-orange-600 shadow-sm">
+                        <MapPin size={20} />
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-gray-500 uppercase font-bold">Customer Mobile</p>
+                        <p className="font-bold text-gray-900">{order.customerMobile}</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => updateOrderStatus(order.id, 'delivered')}
+                      className="w-full bg-orange-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-100 active:scale-95 transition-transform"
+                    >
+                      Mark as Delivered
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-bold text-gray-500 uppercase tracking-widest">Ready for Pickup</h3>
+              {readyOrders.length === 0 ? (
+                <div className="bg-white rounded-3xl p-10 text-center border border-dashed border-gray-200">
+                  <Package className="text-gray-300 mx-auto mb-4" size={48} />
+                  <p className="text-gray-500 text-sm">No orders ready for pickup.</p>
+                </div>
+              ) : (
+                readyOrders.map(order => (
+                  <div key={order.id} className="bg-white rounded-3xl p-4 border border-gray-100 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Order #{order.id.slice(-6)}</p>
+                        <h4 className="font-bold text-gray-900 mt-1 truncate max-w-[200px]">{order.deliveryAddress}</h4>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-400 uppercase font-bold">Charge</p>
+                        <p className="font-bold text-orange-600">₹{order.deliveryCharge || 0}</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await updateDoc(doc(db, 'orders', order.id), {
+                            deliveryBoyId: profile?.uid,
+                            status: 'out_for_delivery'
+                          });
+                          showToast('Order picked up!', 'success');
+                        } catch (error) {
+                          showToast('Failed to pick up order', 'error');
+                        }
+                      }}
+                      disabled={!profile?.isOnline}
+                      className={`w-full py-3 rounded-xl font-bold text-sm transition-all ${profile?.isOnline ? 'bg-orange-600 text-white shadow-lg shadow-orange-100 active:scale-95' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                    >
+                      {profile?.isOnline ? 'Pick Up Order' : 'Go Online to Pick Up'}
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         );
@@ -2542,7 +4048,20 @@ function AlifLailaApp() {
         return (
           <div className="p-4 pb-24 space-y-6">
             <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-black text-gray-900 tracking-tighter">DASHBOARD</h2>
+              <div className="flex items-center space-x-3">
+                <button 
+                  onClick={() => {
+                    setIsAdminRoute(false);
+                    setActiveTab('home');
+                    window.location.hash = '';
+                  }}
+                  className="p-2 bg-gray-100 rounded-2xl text-gray-600 active:scale-90 transition-transform"
+                  title="Exit Admin Panel"
+                >
+                  <X size={20} />
+                </button>
+                <h2 className="text-2xl font-black text-gray-900 tracking-tighter uppercase">Dashboard</h2>
+              </div>
               <div className="flex items-center space-x-2 bg-red-50 text-red-600 px-3 py-1 rounded-full animate-pulse">
                 <Activity size={14} />
                 <span className="text-[10px] font-black uppercase">Live</span>
@@ -2588,6 +4107,17 @@ function AlifLailaApp() {
             <div className="space-y-4">
               <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest ml-1">Quick Actions</h3>
               <div className="grid grid-cols-3 gap-3">
+                <button 
+                  onClick={() => {
+                    setIsAdminRoute(false);
+                    setActiveTab('home');
+                    window.location.hash = '';
+                  }}
+                  className="bg-gray-900 text-white p-4 rounded-3xl flex flex-col items-center space-y-2 shadow-lg shadow-gray-100 active:scale-95 transition-transform"
+                >
+                  <LogOut size={20} />
+                  <span className="text-[9px] font-bold uppercase">Exit Mode</span>
+                </button>
                 <button 
                   onClick={() => setActiveTab('admin-sellers')}
                   className="bg-orange-600 text-white p-4 rounded-3xl flex flex-col items-center space-y-2 shadow-lg shadow-orange-100 active:scale-95 transition-transform"
@@ -2697,8 +4227,19 @@ function AlifLailaApp() {
                         <User size={14} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-bold text-gray-900">{order.customerMobile}</p>
-                        <p className="text-[8px] text-gray-400 truncate max-w-[200px]">{order.deliveryAddress}</p>
+                        <p className="text-[10px] font-bold text-gray-900">
+                          <a href={`tel:${order.customerMobile}`} className="hover:text-orange-600 transition-colors">{order.customerMobile}</a>
+                        </p>
+                        <p className="text-[8px] text-gray-400 truncate max-w-[200px]">
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.deliveryAddress)}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="hover:text-orange-600 transition-colors"
+                          >
+                            {order.deliveryAddress}
+                          </a>
+                        </p>
                       </div>
                     </div>
 
@@ -2915,15 +4456,15 @@ function AlifLailaApp() {
                           <p className="text-[10px] font-black">{s.shopCategory}</p>
                         </div>
                         <div>
-                          <label className="text-[8px] font-bold text-gray-400 uppercase">Contact</label>
-                          <p className="text-[10px] font-black">{s.mobile}</p>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Contact</p>
+                          <a href={`tel:${s.mobile}`} className="text-[10px] font-black hover:text-orange-600 transition-colors">{s.mobile}</a>
                         </div>
                       </div>
 
                       <div className="flex space-x-2">
                         <button 
                           onClick={async () => {
-                            await updateDoc(doc(db, 'users', s.uid), { status: 'approved', role: 'seller' });
+                            await updateDoc(doc(db, 'users', s.uid), { status: 'approved', role: 'seller', isOnline: true });
                             await sendNotification(s.uid, 'Approved!', 'Your seller account is ready.', 'system');
                           }}
                           className="flex-1 bg-green-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
@@ -2932,7 +4473,7 @@ function AlifLailaApp() {
                         </button>
                         <button 
                           onClick={async () => {
-                            await updateDoc(doc(db, 'users', s.uid), { status: 'approved' });
+                            await updateDoc(doc(db, 'users', s.uid), { status: 'blocked' });
                             await sendNotification(s.uid, 'Rejected', 'Your application was rejected.', 'system');
                           }}
                           className="flex-1 bg-red-600 text-white py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-transform"
@@ -2959,7 +4500,7 @@ function AlifLailaApp() {
                           <div>
                             <div className="flex items-center space-x-2">
                               <h4 className="font-black text-gray-900">{s.name}</h4>
-                              <div className={`w-2 h-2 rounded-full ${s.isOnline ? 'bg-green-600 animate-pulse' : 'bg-gray-300'}`} />
+                              <div className={`w-2 h-2 rounded-full ${s.isOnline !== false ? 'bg-green-600 animate-pulse' : 'bg-gray-300'}`} />
                             </div>
                             <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">{s.shopName}</p>
                           </div>
@@ -2979,13 +4520,20 @@ function AlifLailaApp() {
                             <p className="text-[10px] font-black text-orange-600">{s.shopCategory}</p>
                           </div>
                           <div>
-                            <p className="text-[8px] font-bold text-gray-400 uppercase">Mobile</p>
-                            <p className="text-[10px] font-black">{s.mobile}</p>
+                          <p className="text-[8px] font-bold text-gray-400 uppercase">Mobile</p>
+                          <a href={`tel:${s.mobile}`} className="text-[10px] font-black hover:text-orange-600 transition-colors">{s.mobile}</a>
                           </div>
                         </div>
                         <div>
                           <p className="text-[8px] font-bold text-gray-400 uppercase">Address</p>
-                          <p className="text-[10px] font-bold leading-tight">{s.shopAddress}</p>
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.shopAddress)}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-[10px] font-bold leading-tight hover:text-orange-600 transition-colors block"
+                          >
+                            {s.shopAddress}
+                          </a>
                         </div>
                         <div className="grid grid-cols-3 gap-2 pt-2 border-t border-orange-100">
                           <div>
@@ -3052,7 +4600,7 @@ function AlifLailaApp() {
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <p className="text-[8px] font-bold text-gray-400 uppercase">Mobile</p>
-                          <p className="text-[10px] font-black">{c.mobile || 'N/A'}</p>
+                          <a href={`tel:${c.mobile}`} className="text-[10px] font-black hover:text-orange-600 transition-colors">{c.mobile || 'N/A'}</a>
                         </div>
                         <div>
                           <p className="text-[8px] font-bold text-gray-400 uppercase">Wallet</p>
@@ -3061,7 +4609,14 @@ function AlifLailaApp() {
                       </div>
                       <div>
                         <p className="text-[8px] font-bold text-gray-400 uppercase">Delivery Address</p>
-                        <p className="text-[10px] font-bold leading-tight">{c.address || 'No address added'}</p>
+                        <a 
+                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.address || '')}`} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-[10px] font-bold leading-tight hover:text-orange-600 transition-colors block"
+                        >
+                          {c.address || 'No address added'}
+                        </a>
                       </div>
                       <div className="flex justify-between items-center pt-2 border-t border-blue-100">
                         <div>
@@ -3403,7 +4958,7 @@ function AlifLailaApp() {
                               address: profile?.address || '',
                               mobile: profile?.mobile || ''
                             });
-                            setShowAddressModal(true);
+                            setShowMapModal(true);
                           }}
                           className="text-[10px] text-orange-600 font-bold"
                         >
@@ -3412,8 +4967,17 @@ function AlifLailaApp() {
                       </div>
                       {profile?.address ? (
                         <div className="bg-gray-50 p-3 rounded-xl">
-                          <p className="text-xs text-gray-600 leading-relaxed">{profile.address}</p>
-                          <p className="text-xs text-gray-900 font-bold mt-1">{profile.mobile}</p>
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(profile.address || '')}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-xs text-gray-600 leading-relaxed hover:text-orange-600 transition-colors block"
+                          >
+                            {profile.address}
+                          </a>
+                          <a href={`tel:${profile.mobile}`} className="text-xs text-gray-900 font-bold mt-1 hover:text-orange-600 transition-colors block">
+                            {profile.mobile}
+                          </a>
                         </div>
                       ) : (
                         <div className="bg-orange-50 p-3 rounded-xl border border-orange-100">
@@ -3549,14 +5113,23 @@ function AlifLailaApp() {
                       <MapPin size={18} className="text-orange-600 mt-0.5 shrink-0" />
                       <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase">Address</p>
-                        <p className="text-sm text-gray-700 leading-relaxed">{selectedOrder.deliveryAddress}</p>
+                        <a 
+                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedOrder.deliveryAddress)}`} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="text-sm text-gray-700 leading-relaxed hover:text-orange-600 transition-colors block"
+                        >
+                          {selectedOrder.deliveryAddress}
+                        </a>
                       </div>
                     </div>
                     <div className="flex items-start space-x-3">
                       <User size={18} className="text-orange-600 mt-0.5 shrink-0" />
                       <div>
                         <p className="text-[10px] font-bold text-gray-400 uppercase">Contact</p>
-                        <p className="text-sm text-gray-700">{selectedOrder.customerMobile}</p>
+                        <a href={`tel:${selectedOrder.customerMobile}`} className="text-sm text-gray-700 hover:text-orange-600 transition-colors block">
+                          {selectedOrder.customerMobile}
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -3624,6 +5197,262 @@ function AlifLailaApp() {
                   )}
                 </div>
               )}
+
+              {profile?.role === 'customer' && selectedOrder.customerId === profile.uid && selectedOrder.status === 'out_for_delivery' && (
+                <div className="p-6 bg-gray-50 border-t border-gray-100">
+                  <button 
+                    onClick={() => { updateOrderStatus(selectedOrder.id, 'delivered'); setSelectedOrder(null); }}
+                    className="w-full bg-green-600 text-white py-4 rounded-2xl font-bold text-sm shadow-lg shadow-green-100"
+                  >
+                    Confirm Delivery
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Map Picker Modal */}
+      <AnimatePresence>
+        {showMapModal && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-[32px] p-6 shadow-2xl space-y-4"
+            >
+              <div className="sticky top-0 bg-white z-[140] pb-2 space-y-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-xl font-bold text-gray-900">Pick Location</h3>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setUseFreeMap(!useFreeMap)}
+                      className="text-[10px] bg-orange-50 px-2 py-1 rounded-lg font-bold text-orange-600 hover:bg-orange-100 transition-colors border border-orange-100"
+                    >
+                      {useFreeMap ? 'Try Google Maps' : 'Try Free Map'}
+                    </button>
+                    <button onClick={() => setShowMapModal(false)} className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors">
+                      <X size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-1">
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Search for your building</p>
+                    <div className="flex items-center gap-1">
+                      <div className="w-1 h-1 bg-orange-500 rounded-full animate-ping"></div>
+                      <span className="text-[9px] text-orange-500 font-bold">Live Search</span>
+                    </div>
+                  </div>
+                  {!useFreeMap && isGoogleMapsLoaded && !mapAuthError && googleMapsApiKey ? (
+                    <div className="relative">
+                      <Autocomplete
+                        onLoad={(autocomplete) => setAutocomplete(autocomplete)}
+                        onPlaceChanged={() => {
+                          if (autocomplete) {
+                            const place = autocomplete.getPlace();
+                            if (place.geometry?.location) {
+                              const lat = place.geometry.location.lat();
+                              const lng = place.geometry.location.lng();
+                              updateLocation(lat, lng);
+                            }
+                          }
+                        }}
+                      >
+                        <div className="relative">
+                          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-orange-500" size={18} />
+                          <input 
+                            type="text" 
+                            placeholder="Search for building, area, or street..."
+                            className="w-full bg-orange-50/50 border border-orange-100 rounded-2xl py-4 pl-12 pr-4 text-sm font-bold focus:ring-2 focus:ring-orange-500 outline-none placeholder:text-gray-400 shadow-inner"
+                          />
+                        </div>
+                      </Autocomplete>
+                    </div>
+                  ) : (
+                    <div className="relative space-y-2">
+                      <div className="relative">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-orange-500" size={18} />
+                        <input 
+                          type="text" 
+                          placeholder="Search for building, area, or street..."
+                          value={freeSearchQuery}
+                          onChange={(e) => {
+                            setFreeSearchQuery(e.target.value);
+                            if (e.target.value.length >= 3) {
+                              handleFreeSearch(e.target.value);
+                            } else {
+                              setFreeSearchResults([]);
+                            }
+                          }}
+                          className="w-full bg-orange-50/50 border border-orange-100 rounded-2xl py-4 pl-12 pr-4 text-sm font-bold focus:ring-2 focus:ring-orange-500 outline-none placeholder:text-gray-400 shadow-inner"
+                        />
+                        {isSearchingFree && (
+                          <div className="absolute right-4 top-1/2 -translate-y-1/2">
+                            <div className="animate-spin rounded-full h-4 w-4 border-2 border-orange-500 border-t-transparent"></div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {freeSearchResults.length > 0 && (
+                        <div className="absolute z-[130] left-0 right-0 bg-white border border-gray-100 rounded-2xl shadow-xl overflow-hidden max-h-60 overflow-y-auto mt-1">
+                          {freeSearchResults.map((result, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => {
+                                updateLocation(parseFloat(result.lat), parseFloat(result.lon));
+                                setFreeSearchQuery(result.display_name);
+                                setFreeSearchResults([]);
+                              }}
+                              className="w-full text-left p-4 hover:bg-orange-50 border-b border-gray-50 last:border-0 transition-colors"
+                            >
+                              <div className="flex items-start gap-3">
+                                <MapPin size={16} className="text-orange-500 mt-0.5 flex-shrink-0" />
+                                <div>
+                                  <p className="text-sm font-bold text-gray-900 line-clamp-1">
+                                    {result.display_name.split(',')[0]}
+                                  </p>
+                                  <p className="text-[10px] text-gray-500 line-clamp-1">
+                                    {result.display_name.split(',').slice(1).join(',').trim()}
+                                  </p>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {!useFreeMap && isGoogleMapsLoaded && !mapAuthError && googleMapsApiKey ? (
+                <div className="w-full h-80 rounded-2xl overflow-hidden border border-gray-100">
+                  <GoogleMap
+                    mapContainerStyle={{ width: '100%', height: '100%' }}
+                    center={mapCenter || location || { lat: 20.5937, lng: 78.9629 }}
+                    zoom={15}
+                    onClick={(e) => {
+                      if (e.latLng) {
+                        updateLocation(e.latLng.lat(), e.latLng.lng());
+                      }
+                    }}
+                  >
+                    {location && <MarkerF position={location} />}
+                    {sellers.map(seller => seller.location && (
+                      <MarkerF 
+                        key={seller.uid} 
+                        position={seller.location} 
+                        icon={window.google ? {
+                          url: 'https://cdn-icons-png.flaticon.com/512/606/606363.png',
+                          scaledSize: new window.google.maps.Size(32, 32)
+                        } : undefined}
+                        title={seller.shopName || seller.name}
+                        onClick={() => setSelectedSeller(seller)}
+                      />
+                    ))}
+                    {selectedSeller && selectedSeller.location && (
+                      <InfoWindow
+                        position={selectedSeller.location}
+                        onCloseClick={() => setSelectedSeller(null)}
+                      >
+                        <div className="p-1">
+                          <p className="font-bold text-orange-600">{selectedSeller.shopName || selectedSeller.name}</p>
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedSeller.shopAddress || selectedSeller.address || '')}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-[10px] text-gray-500 hover:text-orange-600 transition-colors block"
+                          >
+                            {selectedSeller.shopAddress || selectedSeller.address || 'Available Shop'}
+                          </a>
+                        </div>
+                      </InfoWindow>
+                    )}
+                  </GoogleMap>
+                </div>
+              ) : (
+                <div className="w-full h-80 rounded-2xl overflow-hidden border border-gray-100">
+                  <LeafletMap 
+                    center={mapCenter || location || { lat: 20.5937, lng: 78.9629 }} 
+                    onLocationChange={(lat, lng) => updateLocation(lat, lng)}
+                    mapType={mapType}
+                    setMapType={setMapType}
+                    setDetectedAddress={setDetectedAddress}
+                    isGeocoding={isGeocoding}
+                    sellers={sellers}
+                  />
+                </div>
+              )}
+
+              <div className="bg-orange-50 p-4 rounded-2xl space-y-3">
+                <div className="flex items-start gap-2">
+                  <Info size={14} className="text-orange-600 mt-0.5 flex-shrink-0" />
+                  <p className="text-[10px] text-orange-600 font-bold">
+                    Move the map to align the target with your building.
+                  </p>
+                </div>
+                
+                <div className="space-y-2">
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Detected Address</p>
+                  <div className="flex items-center gap-2 min-h-[40px]">
+                    {isGeocoding && (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.5 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin flex-shrink-0" 
+                      />
+                    )}
+                    <motion.p 
+                      key={detectedAddress}
+                      initial={{ opacity: 0, y: 5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`text-sm font-bold line-clamp-2 leading-relaxed ${isGeocoding || detectedAddress === 'Moving map...' ? 'text-orange-400 italic' : 'text-gray-900'}`}
+                    >
+                      {detectedAddress || 'Detecting address...'}
+                    </motion.p>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-orange-100">
+                  <div className="flex justify-between items-center mb-2">
+                    <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">House / Flat / Floor No.</p>
+                    <span className="text-[9px] text-orange-500 font-bold italic">Required for exact delivery</span>
+                  </div>
+                  <div className="relative">
+                    <input 
+                      type="text"
+                      placeholder="e.g. Flat 402, 4th Floor, Building A"
+                      value={manualAddress}
+                      onChange={(e) => setManualAddress(e.target.value)}
+                      className="w-full bg-white border-2 border-orange-100 rounded-xl py-4 px-4 text-sm font-bold focus:border-orange-500 focus:ring-4 focus:ring-orange-50 outline-none placeholder:text-gray-300 transition-all"
+                    />
+                    {manualAddress.length === 0 && (
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                        <span className="text-[10px] text-orange-400 font-bold animate-pulse">Type here...</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => {
+                  const finalAddress = manualAddress ? `${manualAddress}, ${detectedAddress}` : detectedAddress;
+                  setDetectedAddress(finalAddress);
+                  setAddressFormData(prev => ({ ...prev, address: finalAddress }));
+                  setShowMapModal(false);
+                  // Automatically open address modal to complete details
+                  setShowAddressModal(true);
+                }}
+                className="w-full bg-orange-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <CheckCircle size={20} />
+                Confirm & Save Location
+              </button>
             </motion.div>
           </div>
         )}
@@ -3637,7 +5466,7 @@ function AlifLailaApp() {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl space-y-6"
+              className="bg-white w-full max-w-md rounded-[32px] p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto"
             >
               <div className="text-center">
                 <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center text-orange-600 mx-auto mb-4">
@@ -3647,13 +5476,76 @@ function AlifLailaApp() {
                 <p className="text-gray-500 text-sm mt-1">Please provide your address and mobile number to continue.</p>
               </div>
 
+              {!useFreeMap && isGoogleMapsLoaded && !mapAuthError && googleMapsApiKey ? (
+                <div className="w-full h-48 rounded-2xl overflow-hidden border border-gray-100">
+                  <GoogleMap
+                    mapContainerStyle={{ width: '100%', height: '100%' }}
+                    center={mapCenter || location || { lat: 20.5937, lng: 78.9629 }}
+                    zoom={15}
+                    onClick={(e) => {
+                      if (e.latLng) {
+                        updateLocation(e.latLng.lat(), e.latLng.lng());
+                      }
+                    }}
+                    options={{
+                      disableDefaultUI: true,
+                      zoomControl: true,
+                    }}
+                  >
+                    {location && <MarkerF position={location} />}
+                    {sellers.map(seller => seller.location && (
+                      <MarkerF 
+                        key={seller.uid} 
+                        position={seller.location} 
+                        icon={window.google ? {
+                          url: 'https://cdn-icons-png.flaticon.com/512/606/606363.png',
+                          scaledSize: new window.google.maps.Size(24, 24)
+                        } : undefined}
+                        title={seller.shopName || seller.name}
+                        onClick={() => setSelectedSeller(seller)}
+                      />
+                    ))}
+                    {selectedSeller && selectedSeller.location && (
+                      <InfoWindow
+                        position={selectedSeller.location}
+                        onCloseClick={() => setSelectedSeller(null)}
+                      >
+                        <div className="p-1">
+                          <p className="font-bold text-orange-600 text-xs">{selectedSeller.shopName || selectedSeller.name}</p>
+                          <a 
+                            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedSeller.shopAddress || selectedSeller.address || '')}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-[9px] text-gray-500 hover:text-orange-600 transition-colors block"
+                          >
+                            {selectedSeller.shopAddress || selectedSeller.address || 'Available Shop'}
+                          </a>
+                        </div>
+                      </InfoWindow>
+                    )}
+                  </GoogleMap>
+                </div>
+              ) : (
+                <div className="w-full h-48 rounded-2xl overflow-hidden border border-gray-100">
+                  <LeafletMap 
+                    center={location || { lat: 20.5937, lng: 78.9629 }} 
+                    onLocationChange={(lat, lng) => updateLocation(lat, lng)}
+                    mapType={mapType}
+                    setMapType={setMapType}
+                    setDetectedAddress={setDetectedAddress}
+                    isGeocoding={isGeocoding}
+                    sellers={sellers}
+                  />
+                </div>
+              )}
+
               <div className="space-y-4">
                 <div>
                   <label className="text-[10px] font-bold text-gray-400 uppercase ml-1">Full Address</label>
                   <textarea 
                     value={addressFormData.address}
                     onChange={(e) => setAddressFormData({...addressFormData, address: e.target.value})}
-                    placeholder="House No, Street, Landmark, City..."
+                    placeholder="House No, Building Name, Road, Area, City..."
                     className="w-full bg-gray-50 border-none rounded-xl p-4 text-sm font-bold focus:ring-2 focus:ring-orange-500 min-h-[100px]"
                   />
                   <button 
@@ -3696,8 +5588,54 @@ function AlifLailaApp() {
 
       {/* Bottom Nav */}
       {activeTab !== 'cart' && (
-        <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} role={profile?.role || 'customer'} isAdminRoute={isAdminRoute} />
+        <BottomNav 
+          activeTab={activeTab} 
+          setActiveTab={setActiveTab} 
+          role={profile?.role || 'customer'} 
+          isAdminRoute={isAdminRoute} 
+          setIsAdminRoute={setIsAdminRoute}
+        />
       )}
+
+      {/* Toast Notification Stack */}
+      <div className="fixed bottom-24 left-4 right-4 z-[200] flex flex-col items-center space-y-3 pointer-events-none">
+        <AnimatePresence>
+          {toasts.map((t) => (
+            <motion.div
+              key={t.id}
+              initial={{ opacity: 0, y: 50, scale: 0.8 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.5, transition: { duration: 0.2 } }}
+              layout
+              className="pointer-events-auto"
+            >
+              <div className={`px-6 py-4 rounded-[24px] shadow-2xl flex items-start space-x-4 backdrop-blur-xl border-2 min-w-[280px] max-w-md ${
+                t.type === 'success' ? 'bg-green-600/90 text-white border-green-400/50' :
+                t.type === 'error' ? 'bg-red-600/90 text-white border-red-400/50' :
+                t.type === 'warning' ? 'bg-amber-500/90 text-white border-amber-300/50' :
+                'bg-gray-900/90 text-white border-gray-700/50'
+              }`}>
+                <div className="p-2 bg-white/20 rounded-xl mt-0.5">
+                  {t.type === 'success' ? <CheckCircle2 size={20} /> :
+                   t.type === 'error' ? <AlertCircle size={20} /> :
+                   t.type === 'warning' ? <AlertCircle size={20} /> :
+                   <Info size={20} />}
+                </div>
+                <div className="flex-1">
+                  {t.title && <h4 className="font-black text-sm uppercase tracking-wider mb-0.5">{t.title}</h4>}
+                  <p className="text-sm font-medium opacity-90 leading-relaxed">{t.message}</p>
+                </div>
+                <button 
+                  onClick={() => removeToast(t.id)}
+                  className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
