@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import webpush from "web-push";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, query, where, onSnapshot, limit, orderBy, getDocs } from "firebase/firestore";
+import { getFirestore, collection, query, where, onSnapshot, limit, orderBy, getDocs, updateDoc, doc } from "firebase/firestore";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -50,6 +50,27 @@ async function startServer() {
 
   // Secret key for server-side Firestore access
   const SERVER_SECRET = "alif-laila-push-secret-2026";
+
+  // API to update order status from push notification actions
+  app.post("/api/orders/update-status", async (req, res) => {
+    const { orderId, status, secret } = req.body;
+
+    if (secret !== SERVER_SECRET) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    try {
+      const orderRef = doc(db, "orders", orderId);
+      await updateDoc(orderRef, { 
+        status,
+        serverSecret: SERVER_SECRET 
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating order status:", error);
+      res.status(500).json({ error: "Failed to update order status" });
+    }
+  });
 
   // Listen to Firestore notifications and send push
   function startNotificationListener() {
@@ -103,7 +124,12 @@ async function startServer() {
                 const payload = {
                   title: notification.title,
                   body: notification.message,
-                  url: "/"
+                  url: "/",
+                  requireInteraction: true,
+                  orderId: notification.orderId,
+                  type: notification.type,
+                  image: notification.imageUrl,
+                  customerPhone: notification.customerPhone
                 };
 
                 await webpush.sendNotification(subscription, JSON.stringify(payload));

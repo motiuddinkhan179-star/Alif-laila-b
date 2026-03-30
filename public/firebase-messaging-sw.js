@@ -49,7 +49,23 @@ self.addEventListener('push', function(event) {
     body: data.body || 'New notification',
     icon: '/logo.png',
     badge: '/logo.png',
-    data: data.url || '/'
+    image: data.image || null,
+    data: data.url || '/',
+    requireInteraction: true,
+    vibrate: [200, 100, 200, 100, 200, 100, 200],
+    actions: data.type === 'order' && data.orderId ? [
+      { action: 'accept', title: 'Accept Order', icon: '/logo.png' },
+      { action: 'reject', title: 'Reject Order', icon: '/logo.png' },
+      ...(data.customerPhone ? [{ action: 'call', title: 'Call Customer', icon: '/logo.png' }] : [])
+    ] : []
+  };
+
+  // Store metadata in data for click handling
+  options.data = {
+    url: data.url || '/',
+    orderId: data.orderId,
+    type: data.type,
+    customerPhone: data.customerPhone
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
@@ -58,9 +74,62 @@ self.addEventListener('push', function(event) {
 self.addEventListener('notificationclick', function(event) {
   console.log('[Service Worker] Notification click Received.');
 
+  const notificationData = event.notification.data || {};
+  const orderId = notificationData.orderId;
+  const customerPhone = notificationData.customerPhone;
+  const action = event.action;
+
   event.notification.close();
 
-  event.waitUntil(
-    clients.openWindow(event.notification.data || '/')
-  );
+  if (action === 'call' && customerPhone) {
+    event.waitUntil(
+      clients.openWindow(`tel:${customerPhone}`)
+    );
+  } else if (action === 'accept' || action === 'reject') {
+    const status = action === 'accept' ? 'accepted' : 'rejected';
+    
+    // Perform background action
+    event.waitUntil(
+      fetch('/api/orders/update-status', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          orderId: orderId,
+          status: status,
+          secret: 'alif-laila-push-secret-2026'
+        })
+      }).then(response => {
+        if (response.ok) {
+          return self.registration.showNotification('Success', {
+            body: `Order #${orderId.slice(-6).toUpperCase()} ${status} successfully.`,
+            icon: '/logo.png'
+          });
+        } else {
+          throw new Error('Failed to update order');
+        }
+      }).catch(err => {
+        console.error('Background action failed:', err);
+        // If background action fails, open the app as fallback
+        return clients.openWindow(`/?action=${action}&orderId=${orderId}`);
+      })
+    );
+  } else {
+    // Default click behavior: open the app
+    let targetUrl = notificationData.url || '/';
+    event.waitUntil(
+      clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+        for (let i = 0; i < windowClients.length; i++) {
+          const client = windowClients[i];
+          if (client.url === targetUrl && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        if (clients.openWindow) {
+          return clients.openWindow(targetUrl);
+        }
+      })
+    );
+  }
 });

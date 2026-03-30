@@ -17,6 +17,14 @@
             "lng": { "type": "number" }
           }
         },
+        "currentLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "updatedAt": { "type": "string", "format": "date-time" }
+          }
+        },
         "shopName": { "type": "string" },
         "walletBalance": { "type": "number" },
         "status": { "type": "string", "enum": ["pending", "approved", "blocked"] },
@@ -25,7 +33,8 @@
         "isOnline": { "type": "boolean" },
         "paymentType": { "type": "string", "enum": ["fixed", "per_delivery"] },
         "salary": { "type": "number", "description": "Fixed salary if paymentType is fixed" },
-        "deliveryCharge": { "type": "number", "description": "Charge per delivery if applicable" }
+        "deliveryCharge": { "type": "number", "description": "Charge per delivery if applicable" },
+        "language": { "type": "string", "enum": ["en", "hi", "ur"] }
       },
       "required": ["uid", "name", "role"]
     },
@@ -41,6 +50,8 @@
         "image": { "type": "string" },
         "category": { "type": "string" },
         "description": { "type": "string" },
+        "stock": { "type": "number", "description": "Available quantity" },
+        "isAvailable": { "type": "boolean" },
         "location": {
           "type": "object",
           "properties": {
@@ -65,13 +76,83 @@
         "totalAmount": { "type": "number" },
         "platformFee": { "type": "number" },
         "sellerAmount": { "type": "number" },
-        "status": { "type": "string", "enum": ["pending", "accepted", "ready", "out_for_delivery", "delivered", "rejected"] },
+        "status": { "type": "string", "enum": ["pending", "accepted", "ready", "out_for_delivery", "delivered", "rejected", "cancelled"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "paymentStatus": { "type": "string", "enum": ["pending", "paid"] },
         "deliveryBoyId": { "type": "string" },
-        "deliveryCharge": { "type": "number" }
+        "deliveryCharge": { "type": "number" },
+        "couponCode": { "type": "string" },
+        "discountAmount": { "type": "number" },
+        "address": { "type": "object" },
+        "cancellationReason": { "type": "string" }
       },
       "required": ["customerId", "sellerId", "items", "totalAmount"]
+    },
+    "reviews": {
+      "title": "Review",
+      "description": "Customer reviews for products or sellers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderId": { "type": "string" },
+        "customerId": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "productId": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "customerId", "rating"]
+    },
+    "chats": {
+      "title": "Chat",
+      "description": "In-app messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "receiverId", "message", "createdAt"]
+    },
+    "coupons": {
+      "title": "Coupon",
+      "description": "Discount coupons",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "discountType": { "type": "string", "enum": ["percentage", "fixed"] },
+        "discountValue": { "type": "number" },
+        "minOrderAmount": { "type": "number" },
+        "maxDiscount": { "type": "number" },
+        "expiryDate": { "type": "string", "format": "date-time" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "discountType", "discountValue", "isActive"]
+    },
+    "addresses": {
+      "title": "Address",
+      "description": "Saved user addresses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "label": { "type": "string", "enum": ["Home", "Work", "Other"] },
+        "addressLine": { "type": "string" },
+        "city": { "type": "string" },
+        "pincode": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        }
+      },
+      "required": ["userId", "label", "addressLine", "location"]
     },
     "notifications": {
       "title": "Notification",
@@ -123,6 +204,22 @@
     "/transactions/{transactionId}": {
       "schema": "transactions",
       "description": "Financial transactions"
+    },
+    "/reviews/{reviewId}": {
+      "schema": "reviews",
+      "description": "Customer reviews"
+    },
+    "/chats/{chatId}": {
+      "schema": "chats",
+      "description": "In-app messages"
+    },
+    "/coupons/{couponCode}": {
+      "schema": "coupons",
+      "description": "Discount coupons"
+    },
+    "/addresses/{addressId}": {
+      "schema": "addresses",
+      "description": "Saved user addresses"
     }
   }
 }
